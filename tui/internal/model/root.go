@@ -26,11 +26,17 @@ const (
 )
 
 type message struct {
-	role    role
-	text    string
-	diff    string
-	runID   string
-	applied bool
+	role      role
+	text      string
+	diff      string
+	runID     string
+	applied   bool
+	streaming bool
+}
+
+// StreamChunkMsg is exported so main.go's RPC notification handler can send it.
+type StreamChunkMsg struct {
+	Delta string
 }
 
 type infoMsg struct {
@@ -169,6 +175,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.rerender()
+	case StreamChunkMsg:
+		if !m.busy {
+			break
+		}
+		idx := m.lastStreamingAgentIdx()
+		if idx < 0 {
+			m.history = append(m.history, message{role: roleAgent, text: msg.Delta, streaming: true})
+		} else {
+			m.history[idx].text += msg.Delta
+		}
+		m.rerender()
 	case runDoneMsg:
 		m.busy = false
 		if msg.err != nil {
@@ -176,7 +193,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			recID, _ := msg.detail.Record["run_id"].(string)
 			m.lastRunID = recID
-			m.push(roleAgent, msg.detail.Summary, msg.detail.Patch)
+			idx := m.lastStreamingAgentIdx()
+			if idx >= 0 {
+				m.history[idx].text = msg.detail.Summary
+				m.history[idx].diff = msg.detail.Patch
+				m.history[idx].streaming = false
+			} else {
+				m.push(roleAgent, msg.detail.Summary, msg.detail.Patch)
+			}
 		}
 		m.rerender()
 	case applyDoneMsg:
@@ -366,6 +390,15 @@ func renderShellResult(result *rpc.ShellResult) string {
 
 func (m *Model) push(r role, text, diff string) {
 	m.history = append(m.history, message{role: r, text: text, diff: diff})
+}
+
+func (m *Model) lastStreamingAgentIdx() int {
+	for i := len(m.history) - 1; i >= 0; i-- {
+		if m.history[i].role == roleAgent && m.history[i].streaming {
+			return i
+		}
+	}
+	return -1
 }
 
 func (m *Model) layout() {

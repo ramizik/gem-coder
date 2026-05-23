@@ -174,7 +174,40 @@ gemcoder run "Fix the failing tests"
 ```
 
 For each run, GemCoder stores `managed-request.json`, `managed-response.json`,
-`task-packet.yaml`, and the event graph under `.gemcoder/runs/<run-id>/`.
+`managed-result.json`, `run-summary.json`, `task-packet.yaml`, and the event
+graph under `.gemcoder/runs/<run-id>/`.
+
+### Troubleshooting runs
+
+Start with the local readiness check:
+
+```bash
+uv run gemcoder doctor
+```
+
+Then run a small live smoke test:
+
+```bash
+uv run gemcoder run "Hello"
+```
+
+A healthy run prints the configured provider mode/model, returns a short
+assistant response, and writes artifacts under `.gemcoder/runs/<run-id>/`.
+Inspect the timeline with:
+
+```bash
+uv run gemcoder graph <run-id>
+```
+
+If a run fails, GemCoder records safe diagnostics such as provider mode, model,
+endpoint, elapsed seconds, HTTP status, and error type in `run-summary.json`.
+It does not store or print `GEMINI_API_KEY`. Common fixes:
+
+- `401` or `403`: rotate/check `GEMINI_API_KEY` and confirm model/API access.
+- `404`: check `managed_agent.base_agent` and `managed_agent.api_base`.
+- `timeout`: retry, reduce the task/context size, or increase
+  `managed_agent.timeout_seconds`.
+- `network`: check connectivity and the configured API base URL.
 
 ## Roadmap
 

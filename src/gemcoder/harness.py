@@ -23,6 +23,7 @@ class HarnessRunResult:
     summary: str
     patch_path: str | None = None
     verification: list[VerificationResult] | None = None
+    diagnostics: dict[str, object] | None = None
 
 
 @dataclass(slots=True)
@@ -157,7 +158,7 @@ class HarnessRunner:
         manifest["manifest_path"] = str(manifest_path.relative_to(self.root))
         return manifest
 
-    def run(self, task: str) -> HarnessRunResult:
+    def run(self, task: str, on_chunk=None) -> HarnessRunResult:
         run_id = self.store.create_run(task)
         self.store.append(run_id, "harness.loaded", self.inspect_harness())
         build_manifest = self.current_build_manifest()
@@ -173,23 +174,34 @@ class HarnessRunner:
         self.store.write_artifact(run_id, "task-packet.yaml", packet)
 
         client = ManagedAgentClient(self.config, self.root)
+        request_endpoint = client.request_endpoint()
+        request_diagnostics = client.request_diagnostics(request_endpoint)
         self.store.append(
             run_id,
             "managed.interaction.started",
             {"provider": self.config.managed_agent.provider},
         )
+        self.store.append(run_id, "provider.request.started", request_diagnostics)
         try:
-            managed_result = client.run_task(packet)
+            managed_result = client.run_task(packet, on_chunk=on_chunk)
         except ManagedAgentError as exc:
             managed_result = ManagedAgentResult(
                 summary=f"Managed Agent request failed: {exc}",
-                request=json.dumps(client.build_interaction_payload(packet), indent=2) + "\n",
+                request=json.dumps(client.build_request_payload(packet), indent=2) + "\n",
+                diagnostics=exc.diagnostics,
             )
             self.store.append(
                 run_id,
                 "managed.interaction.failed",
                 {"error": str(exc)},
             )
+            self.store.append(
+                run_id,
+                "provider.request.failed",
+                {"error": str(exc), **exc.diagnostics},
+            )
+        else:
+            self.store.append(run_id, "provider.request.finished", managed_result.diagnostics)
         self._store_managed_result(run_id, managed_result)
 
         patch_path: str | None = None
@@ -200,10 +212,12 @@ class HarnessRunner:
         else:
             self.store.append(run_id, "patch.empty")
 
+        self._store_run_summary(run_id, managed_result, patch_path)
         return HarnessRunResult(
             run_id=run_id,
             summary=managed_result.summary,
             patch_path=patch_path,
+            diagnostics=managed_result.diagnostics,
         )
 
     def _maybe_answer_from_verification(
@@ -278,6 +292,29 @@ class HarnessRunner:
             run_id,
             "managed-result.json",
             json.dumps(asdict(result), indent=2) + "\n",
+        )
+
+    def _store_run_summary(
+        self, run_id: str, result: ManagedAgentResult, patch_path: str | None
+    ) -> None:
+        diagnostics = result.diagnostics
+        summary = {
+            "run_id": run_id,
+            "status": diagnostics.get("status", "completed"),
+            "provider": diagnostics.get("provider", self.config.managed_agent.provider),
+            "mode": diagnostics.get("mode", self.config.managed_agent.mode),
+            "model": diagnostics.get("model", self.config.managed_agent.base_agent),
+            "endpoint": diagnostics.get("endpoint"),
+            "elapsed_seconds": diagnostics.get("elapsed_seconds"),
+            "http_status": diagnostics.get("http_status"),
+            "error_type": diagnostics.get("error_type"),
+            "patch_present": bool(patch_path),
+            "patch_path": patch_path,
+        }
+        self.store.write_artifact(
+            run_id,
+            "run-summary.json",
+            json.dumps(summary, indent=2) + "\n",
         )
 
     def _read_instructions(self) -> str:

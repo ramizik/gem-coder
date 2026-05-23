@@ -43,4 +43,9 @@ var (
 
 	Diff = lipgloss.NewStyle().
 		Foreground(Soft)
+
+	DiffAdd  = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))  // green
+	DiffDel  = lipgloss.NewStyle().Foreground(lipgloss.Color("203")) // red
+	DiffHunk = lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Bold(true)
+	DiffMeta = lipgloss.NewStyle().Foreground(Subtle)
 )

@@ -93,7 +93,16 @@ def _get_run(root: Path, run_id: str) -> dict[str, Any]:
 
 
 def _start_run(root: Path, task: str) -> dict[str, Any]:
-    result = HarnessRunner(root).run(task)
+    def on_chunk(delta: str) -> None:
+        sys.stdout.write(
+            json.dumps(
+                {"jsonrpc": "2.0", "method": "run.chunk", "params": {"delta": delta}}
+            )
+            + "\n"
+        )
+        sys.stdout.flush()
+
+    result = HarnessRunner(root).run(task, on_chunk=on_chunk)
     patch = ""
     if result.patch_path:
         patch_file = root / result.patch_path

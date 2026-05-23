@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -14,6 +16,8 @@ import yaml
 
 from gemcoder.config import GemCoderConfig
 from gemcoder.google_sources import build_google_sources
+
+ChunkCallback = Callable[[str], None]
 
 # google_sources.py mounts files at "/workspace/repo/<rel_path>", so the
 # Managed Agent generates diffs against those paths. Strip this prefix
@@ -24,6 +28,10 @@ WORKSPACE_PREFIX = "workspace/repo/"
 class ManagedAgentError(RuntimeError):
     """Raised when the Managed Agents API request fails."""
 
+    def __init__(self, message: str, diagnostics: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.diagnostics = diagnostics or {}
+
 
 @dataclass(slots=True)
 class ManagedAgentResult:
@@ -31,6 +39,7 @@ class ManagedAgentResult:
     patch: str = ""
     raw: str = ""
     request: str = ""
+    diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
 class JsonTransport(Protocol):
@@ -58,6 +67,7 @@ class ManagedAgentClient:
         self.root = Path(root)
         self.api_key = api_key if api_key is not None else os.getenv("GEMINI_API_KEY")
         self.transport = transport or _urllib_transport
+        self.last_diagnostics: dict[str, Any] = {}
 
     def create_agent(self) -> str:
         if not self.api_key:
@@ -67,7 +77,9 @@ class ManagedAgentClient:
         response = self._post("agents", body)
         return str(response.get("id") or response.get("name") or body["id"])
 
-    def run_task(self, task_packet: str) -> ManagedAgentResult:
+    def run_task(
+        self, task_packet: str, on_chunk: ChunkCallback | None = None
+    ) -> ManagedAgentResult:
         if not self.api_key:
             return ManagedAgentResult(
                 summary=(
@@ -75,10 +87,11 @@ class ManagedAgentClient:
                     "but did not call the Managed Agents API."
                 ),
                 raw=task_packet,
+                diagnostics=self.request_diagnostics(self.request_endpoint()),
             )
 
         if self.config.managed_agent.mode in {"generate_content", "generate-content", "direct"}:
-            return self._run_generate_content(task_packet)
+            return self._run_generate_content(task_packet, on_chunk=on_chunk)
 
         body = self.build_interaction_payload(task_packet)
         response = self._post("interactions", body)
@@ -88,10 +101,22 @@ class ManagedAgentClient:
             patch=_extract_unified_diff(output_text),
             raw=json.dumps(response, indent=2) + "\n",
             request=json.dumps(body, indent=2) + "\n",
+            diagnostics=self.last_diagnostics,
         )
 
-    def _run_generate_content(self, task_packet: str) -> ManagedAgentResult:
+    def _run_generate_content(
+        self, task_packet: str, on_chunk: ChunkCallback | None = None
+    ) -> ManagedAgentResult:
         body = self.build_generate_content_payload(task_packet)
+        if on_chunk is not None:
+            output_text, raw_chunks = self._stream_generate_content(body, on_chunk)
+            return ManagedAgentResult(
+                summary=output_text or "Gemini returned no output text.",
+                patch=_extract_unified_diff(output_text),
+                raw=raw_chunks,
+                request=json.dumps(body, indent=2) + "\n",
+                diagnostics=self.last_diagnostics,
+            )
         response = self._post(f"models/{self._model_name()}:generateContent", body)
         output_text = _extract_output_text(response)
         return ManagedAgentResult(
@@ -99,7 +124,75 @@ class ManagedAgentClient:
             patch=_extract_unified_diff(output_text),
             raw=json.dumps(response, indent=2) + "\n",
             request=json.dumps(body, indent=2) + "\n",
+            diagnostics=self.last_diagnostics,
         )
+
+    def _stream_generate_content(
+        self, body: dict[str, Any], on_chunk: ChunkCallback
+    ) -> tuple[str, str]:
+        """Stream generateContent via SSE and invoke on_chunk for each text delta."""
+        url = (
+            f"{self.config.managed_agent.api_base.rstrip('/')}"
+            f"/models/{self._model_name()}:streamGenerateContent?alt=sse"
+        )
+        headers = {
+            "Content-Type": "application/json",
+            "x-goog-api-key": self.api_key or "",
+            "Api-Revision": self.config.managed_agent.api_revision,
+        }
+        request = Request(
+            url=url, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST"
+        )
+        full_text: list[str] = []
+        raw_lines: list[str] = []
+        try:
+            with urlopen(  # noqa: S310
+                request, timeout=self.config.managed_agent.timeout_seconds
+            ) as response:
+                for line_bytes in response:
+                    line = line_bytes.decode("utf-8", errors="replace").rstrip("\n")
+                    if not line:
+                        continue
+                    raw_lines.append(line)
+                    if not line.startswith("data: "):
+                        continue
+                    payload = line[len("data: "):].strip()
+                    if not payload or payload == "[DONE]":
+                        continue
+                    try:
+                        event = json.loads(payload)
+                    except json.JSONDecodeError:
+                        continue
+                    delta = _extract_output_text(event)
+                    if delta:
+                        full_text.append(delta)
+                        on_chunk(delta)
+        except HTTPError as exc:
+            details = exc.read().decode("utf-8", errors="replace")
+            raise ManagedAgentError(
+                f"streamGenerateContent returned {exc.code}: {details}"
+            ) from exc
+        except (URLError, TimeoutError) as exc:
+            raise ManagedAgentError(f"streamGenerateContent failed: {exc}") from exc
+        return "".join(full_text), "\n".join(raw_lines) + "\n"
+
+    def build_request_payload(self, task_packet: str) -> dict[str, Any]:
+        if self.config.managed_agent.mode in {"generate_content", "generate-content", "direct"}:
+            return self.build_generate_content_payload(task_packet)
+        return self.build_interaction_payload(task_packet)
+
+    def request_endpoint(self) -> str:
+        if self.config.managed_agent.mode in {"generate_content", "generate-content", "direct"}:
+            return f"models/{self._model_name()}:generateContent"
+        return "interactions"
+
+    def request_diagnostics(self, endpoint: str) -> dict[str, Any]:
+        return {
+            "provider": self.config.managed_agent.provider,
+            "mode": self.config.managed_agent.mode,
+            "model": self._provider_target(),
+            "endpoint": endpoint,
+        }
 
     def build_create_agent_payload(self) -> dict[str, Any]:
         agent_id = self.config.managed_agent.agent_id or self.config.project.name
@@ -175,6 +268,11 @@ class ManagedAgentClient:
     def _model_name(self) -> str:
         return self.config.managed_agent.base_agent.removeprefix("models/")
 
+    def _provider_target(self) -> str:
+        if self.config.managed_agent.mode in {"persisted", "agent"}:
+            return self.config.managed_agent.agent_id or self.config.managed_agent.base_agent
+        return self._model_name()
+
     def _post(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
         headers = {
             "Content-Type": "application/json",
@@ -182,13 +280,43 @@ class ManagedAgentClient:
             "Api-Revision": self.config.managed_agent.api_revision,
         }
         url = f"{self.config.managed_agent.api_base.rstrip('/')}/{endpoint.lstrip('/')}"
-        return self.transport(
-            method="POST",
-            url=url,
-            headers=headers,
-            payload=payload,
-            timeout=self.config.managed_agent.timeout_seconds,
+        started = perf_counter()
+        diagnostics = self.request_diagnostics(endpoint)
+        try:
+            response = self.transport(
+                method="POST",
+                url=url,
+                headers=headers,
+                payload=payload,
+                timeout=self.config.managed_agent.timeout_seconds,
+            )
+        except TimeoutError as exc:
+            elapsed = round(perf_counter() - started, 3)
+            diagnostics.update(
+                {
+                    "status": "failed",
+                    "elapsed_seconds": elapsed,
+                    "error_type": "timeout",
+                }
+            )
+            raise ManagedAgentError(
+                "Managed Agents API request timed out after "
+                f"{self.config.managed_agent.timeout_seconds} seconds.",
+                diagnostics,
+            ) from exc
+        except ManagedAgentError as exc:
+            elapsed = round(perf_counter() - started, 3)
+            diagnostics.update(exc.diagnostics)
+            diagnostics.setdefault("status", "failed")
+            diagnostics["elapsed_seconds"] = elapsed
+            exc.diagnostics = diagnostics
+            raise
+
+        diagnostics.update(
+            {"status": "success", "elapsed_seconds": round(perf_counter() - started, 3)}
         )
+        self.last_diagnostics = diagnostics
+        return response
 
 
 def _urllib_transport(
@@ -206,12 +334,24 @@ def _urllib_transport(
             raw = response.read().decode("utf-8")
     except HTTPError as exc:
         details = exc.read().decode("utf-8", errors="replace")
-        raise ManagedAgentError(f"Managed Agents API returned {exc.code}: {details}") from exc
+        raise ManagedAgentError(
+            f"Managed Agents API returned {exc.code}: {details}",
+            {"http_status": exc.code, "error_type": "http"},
+        ) from exc
     except URLError as exc:
-        raise ManagedAgentError(f"Managed Agents API request failed: {exc.reason}") from exc
+        if isinstance(exc.reason, TimeoutError):
+            raise ManagedAgentError(
+                f"Managed Agents API request timed out after {timeout} seconds.",
+                {"error_type": "timeout"},
+            ) from exc
+        raise ManagedAgentError(
+            f"Managed Agents API request failed: {exc.reason}",
+            {"error_type": "network"},
+        ) from exc
     except TimeoutError as exc:
         raise ManagedAgentError(
-            f"Managed Agents API request timed out after {timeout} seconds."
+            f"Managed Agents API request timed out after {timeout} seconds.",
+            {"error_type": "timeout"},
         ) from exc
 
     if not raw:

@@ -3,6 +3,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -36,6 +37,18 @@ func main() {
 
 	// No mouse capture: terminal's native click-drag selection + Cmd/Ctrl+C copy stays available.
 	p := tea.NewProgram(model.New(client), tea.WithAltScreen())
+	client.SetNotificationHandler(func(method string, params json.RawMessage) {
+		if method != "run.chunk" {
+			return
+		}
+		var payload struct {
+			Delta string `json:"delta"`
+		}
+		if err := json.Unmarshal(params, &payload); err != nil {
+			return
+		}
+		p.Send(model.StreamChunkMsg{Delta: payload.Delta})
+	})
 	if _, err := p.Run(); err != nil {
 		fatalf("tui error: %v", err)
 	}

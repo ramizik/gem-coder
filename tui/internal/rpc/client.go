@@ -34,12 +34,13 @@ type response struct {
 }
 
 type Client struct {
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	stdout *bufio.Scanner
-	stderr io.ReadCloser
-	mu     sync.Mutex // serializes one in-flight call
-	nextID atomic.Int64
+	cmd      *exec.Cmd
+	stdin    io.WriteCloser
+	stdout   *bufio.Scanner
+	stderr   io.ReadCloser
+	mu       sync.Mutex // serializes one in-flight call
+	nextID   atomic.Int64
+	onNotify NotificationHandler
 }
 
 // Start spawns the server (e.g. exec.Command("uv","run","gemcoder","serve") or just "gemcoder","serve").
@@ -69,7 +70,20 @@ func (c *Client) Close() error {
 	return c.cmd.Wait()
 }
 
-// Call sends one request and reads exactly one response. Not safe for concurrent calls.
+// NotificationHandler is invoked for server-pushed notifications encountered
+// during a Call (JSON-RPC messages with no "id"). Set via SetNotificationHandler.
+type NotificationHandler func(method string, params json.RawMessage)
+
+// SetNotificationHandler installs a handler invoked for every server notification.
+func (c *Client) SetNotificationHandler(h NotificationHandler) {
+	c.mu.Lock()
+	c.onNotify = h
+	c.mu.Unlock()
+}
+
+// Call sends one request and reads stdout until it sees the matching response.
+// Any notifications received in the meantime are dispatched via the handler.
+// Not safe for concurrent calls.
 func (c *Client) Call(method string, params any, out any) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -84,23 +98,40 @@ func (c *Client) Call(method string, params any, out any) error {
 	if _, err := c.stdin.Write(append(buf, '\n')); err != nil {
 		return fmt.Errorf("write: %w", err)
 	}
-	if !c.stdout.Scan() {
-		if err := c.stdout.Err(); err != nil {
-			return fmt.Errorf("read: %w", err)
+	for {
+		if !c.stdout.Scan() {
+			if err := c.stdout.Err(); err != nil {
+				return fmt.Errorf("read: %w", err)
+			}
+			return fmt.Errorf("read: EOF")
 		}
-		return fmt.Errorf("read: EOF")
+		raw := append([]byte(nil), c.stdout.Bytes()...)
+		var head struct {
+			ID     *int64          `json:"id"`
+			Method string          `json:"method"`
+			Params json.RawMessage `json:"params"`
+		}
+		if err := json.Unmarshal(raw, &head); err != nil {
+			return fmt.Errorf("decode: %w", err)
+		}
+		if head.ID == nil && head.Method != "" {
+			if c.onNotify != nil {
+				c.onNotify(head.Method, head.Params)
+			}
+			continue
+		}
+		var resp response
+		if err := json.Unmarshal(raw, &resp); err != nil {
+			return fmt.Errorf("decode: %w", err)
+		}
+		if resp.Error != nil {
+			return resp.Error
+		}
+		if out == nil {
+			return nil
+		}
+		return json.Unmarshal(resp.Result, out)
 	}
-	var resp response
-	if err := json.Unmarshal(c.stdout.Bytes(), &resp); err != nil {
-		return fmt.Errorf("decode: %w", err)
-	}
-	if resp.Error != nil {
-		return resp.Error
-	}
-	if out == nil {
-		return nil
-	}
-	return json.Unmarshal(resp.Result, out)
 }
 
 // Stderr returns the server's stderr stream so the caller can tee it to a log.

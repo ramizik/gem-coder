@@ -1,7 +1,9 @@
 import os
+from io import BytesIO
 from pathlib import Path
+from urllib.error import HTTPError
 
-from gemcoder.cli.main import _load_dotenv
+from gemcoder.cli.main import _failure_guidance, _load_dotenv
 from gemcoder.config import load_config
 from gemcoder.google_sources import build_google_sources
 from gemcoder.harness import HarnessRunner
@@ -11,6 +13,7 @@ from gemcoder.managed import (
     _extract_output_text,
     _extract_unified_diff,
     _strip_tool_oriented_sections,
+    _urllib_transport,
 )
 from gemcoder.task_packet import build_task_packet
 from gemcoder.templates import scaffold
@@ -146,7 +149,7 @@ def test_run_records_managed_agent_error(tmp_path: Path, monkeypatch) -> None:
     scaffold(tmp_path)
     config = load_config(tmp_path)
 
-    def fake_run_task(self, task_packet):
+    def fake_run_task(self, task_packet, **kwargs):
         raise ManagedAgentError("boom")
 
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
@@ -221,6 +224,11 @@ def test_generate_content_client_uses_rest_transport(tmp_path: Path) -> None:
     assert calls[0]["method"] == "POST"
     assert calls[0]["url"].endswith("/models/gemini-flash-latest:generateContent")
     assert calls[0]["headers"]["x-goog-api-key"] == "test-key"
+    assert result.diagnostics["mode"] == "generate_content"
+    assert result.diagnostics["model"] == "gemini-flash-latest"
+    assert result.diagnostics["endpoint"] == "models/gemini-flash-latest:generateContent"
+    assert result.diagnostics["status"] == "success"
+    assert "elapsed_seconds" in result.diagnostics
 
 
 def test_generate_content_mode_uses_model_endpoint(tmp_path: Path) -> None:
@@ -247,6 +255,95 @@ def test_generate_content_mode_uses_model_endpoint(tmp_path: Path) -> None:
     assert calls[0]["url"].endswith("/models/gemini-flash-latest:generateContent")
     assert "contents" in calls[0]["payload"]
     assert "systemInstruction" in calls[0]["payload"]
+
+
+def test_transport_normalizes_socket_timeout(monkeypatch) -> None:
+    def fake_urlopen(request, timeout):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr("gemcoder.managed.urlopen", fake_urlopen)
+
+    try:
+        _urllib_transport(
+            method="POST",
+            url="https://example.invalid",
+            headers={},
+            payload={},
+            timeout=3,
+        )
+    except ManagedAgentError as exc:
+        assert "timed out after 3 seconds" in str(exc)
+        assert exc.diagnostics["error_type"] == "timeout"
+    else:
+        raise AssertionError("expected ManagedAgentError")
+
+
+def test_transport_records_http_status_without_secrets(monkeypatch) -> None:
+    class FakeResponse(BytesIO):
+        def close(self):
+            pass
+
+    def fake_urlopen(request, timeout):
+        raise HTTPError(
+            request.full_url,
+            401,
+            "Unauthorized",
+            hdrs=None,
+            fp=FakeResponse(b'{"error":"bad key"}'),
+        )
+
+    monkeypatch.setattr("gemcoder.managed.urlopen", fake_urlopen)
+
+    try:
+        _urllib_transport(
+            method="POST",
+            url="https://example.invalid",
+            headers={"x-goog-api-key": "secret-key"},
+            payload={},
+            timeout=3,
+        )
+    except ManagedAgentError as exc:
+        assert exc.diagnostics["http_status"] == 401
+        assert "secret-key" not in str(exc)
+        assert "secret-key" not in repr(exc.diagnostics)
+    else:
+        raise AssertionError("expected ManagedAgentError")
+
+
+def test_failure_guidance_is_actionable() -> None:
+    assert "GEMINI_API_KEY" in _failure_guidance({"http_status": 401})
+    assert "timeout_seconds" in _failure_guidance({"error_type": "timeout"})
+    assert "base_agent" in _failure_guidance({"http_status": 404})
+
+
+def test_harness_records_provider_events_and_run_summary(tmp_path: Path, monkeypatch) -> None:
+    scaffold(tmp_path)
+    config = load_config(tmp_path)
+
+    def fake_transport(**kwargs):
+        return {"candidates": [{"content": {"parts": [{"text": "hello"}]}}]}
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr(
+        "gemcoder.harness.ManagedAgentClient",
+        lambda config, root: ManagedAgentClient(
+            config,
+            root,
+            api_key="test-key",
+            transport=fake_transport,
+        ),
+    )
+
+    runner = HarnessRunner(tmp_path, config)
+    result = runner.run("hello")
+    events = runner.store.read_events(result.run_id)
+    summary = (tmp_path / ".gemcoder" / "runs" / result.run_id / "run-summary.json").read_text()
+
+    assert any(event.type == "provider.request.started" for event in events)
+    assert any(event.type == "provider.request.finished" for event in events)
+    assert '"status": "success"' in summary
+    assert '"patch_present": false' in summary
+    assert "test-key" not in summary
 
 
 def test_generate_content_prompt_strips_skills(tmp_path: Path) -> None:

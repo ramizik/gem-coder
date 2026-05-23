@@ -95,6 +95,8 @@ def doctor() -> None:
         "ok" if os.getenv("GEMINI_API_KEY") else "missing",
         "required for Managed Agents",
     )
+    table.add_row("Provider mode", config.managed_agent.mode, config.managed_agent.provider)
+    table.add_row("Model/agent", "configured", config.managed_agent.base_agent)
     table.add_row(
         "Verification",
         "ok" if config.verification.commands else "not configured",
@@ -116,9 +118,43 @@ def agent_create() -> None:
 @app.command()
 def run(task: str = typer.Argument(..., help="Coding task to run.")) -> None:
     """Run a coding task through GemCoder."""
-    result = HarnessRunner(Path.cwd()).run(task)
-    console.print(Panel(result.summary, title=f"Run {result.run_id}"))
+    root = Path.cwd()
+    config = load_config(root)
+    console.print(
+        "[dim]Provider: "
+        f"{config.managed_agent.provider} "
+        f"mode={config.managed_agent.mode} "
+        f"model={config.managed_agent.base_agent} "
+        f"auth={'present' if os.getenv('GEMINI_API_KEY') else 'missing'}[/dim]"
+    )
+    result = HarnessRunner(root, config).run(task)
+    diagnostics = result.diagnostics or {}
+    if diagnostics.get("status") == "failed":
+        console.print(
+            Panel(
+                result.summary + "\n\n" + _failure_guidance(diagnostics),
+                title=f"[red]Run {result.run_id} failed[/red]",
+            )
+        )
+    else:
+        elapsed = diagnostics.get("elapsed_seconds")
+        subtitle = f" ({elapsed}s)" if elapsed is not None else ""
+        console.print(Panel(result.summary, title=f"Run {result.run_id}{subtitle}"))
     console.print(f"Artifacts: .gemcoder/runs/{result.run_id}")
+
+
+def _failure_guidance(diagnostics: dict[str, object]) -> str:
+    error_type = diagnostics.get("error_type")
+    http_status = diagnostics.get("http_status")
+    if error_type == "timeout":
+        return "Next steps: retry, increase managed_agent.timeout_seconds, or use a smaller task."
+    if http_status in {401, 403}:
+        return "Next steps: check GEMINI_API_KEY and confirm the key has access to this model/API."
+    if http_status == 404:
+        return "Next steps: check managed_agent.base_agent and api_base in gemcoder.yaml."
+    if error_type == "network":
+        return "Next steps: check network access and the managed_agent.api_base URL."
+    return "Next steps: inspect managed-result.json and run `gemcoder doctor`."
 
 
 @app.command()
