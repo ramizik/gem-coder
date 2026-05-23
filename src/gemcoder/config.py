@@ -17,8 +17,8 @@ class ProjectConfig(BaseModel):
 
 class ManagedAgentConfig(BaseModel):
     provider: str = "google"
-    mode: str = "inline"
-    base_agent: str = "antigravity-preview-05-2026"
+    mode: str = "generate_content"
+    base_agent: str = "gemini-flash-latest"
     api_base: str = "https://generativelanguage.googleapis.com/v1beta"
     api_revision: str = "2026-05-20"
     reuse_sessions: bool = True
@@ -30,7 +30,7 @@ class ManagedAgentConfig(BaseModel):
         "a concise summary plus a unified diff when code changes are needed."
     )
     tools: list[str | dict[str, Any]] = Field(default_factory=list)
-    timeout_seconds: int = 300
+    timeout_seconds: int = 60
 
 
 class HarnessConfig(BaseModel):

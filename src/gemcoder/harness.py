@@ -12,7 +12,7 @@ import yaml
 from gemcoder.config import GemCoderConfig, load_config
 from gemcoder.events import RunStore
 from gemcoder.google_sources import build_google_sources
-from gemcoder.managed import ManagedAgentClient, ManagedAgentResult
+from gemcoder.managed import ManagedAgentClient, ManagedAgentError, ManagedAgentResult
 from gemcoder.task_packet import build_task_packet, collect_context_files, load_skills
 from gemcoder.verify import VerificationResult, run_verification
 
@@ -164,6 +164,10 @@ class HarnessRunner:
         if build_manifest is not None:
             self.store.append(run_id, "harness.build.loaded", build_manifest)
 
+        preflight = self._maybe_answer_from_verification(run_id, task)
+        if preflight is not None:
+            return preflight
+
         packet = build_task_packet(self.root, task, self.config)
         self.store.append(run_id, "task.packet.created")
         self.store.write_artifact(run_id, "task-packet.yaml", packet)
@@ -174,7 +178,18 @@ class HarnessRunner:
             "managed.interaction.started",
             {"provider": self.config.managed_agent.provider},
         )
-        managed_result = client.run_task(packet)
+        try:
+            managed_result = client.run_task(packet)
+        except ManagedAgentError as exc:
+            managed_result = ManagedAgentResult(
+                summary=f"Managed Agent request failed: {exc}",
+                request=json.dumps(client.build_interaction_payload(packet), indent=2) + "\n",
+            )
+            self.store.append(
+                run_id,
+                "managed.interaction.failed",
+                {"error": str(exc)},
+            )
         self._store_managed_result(run_id, managed_result)
 
         patch_path: str | None = None
@@ -190,6 +205,41 @@ class HarnessRunner:
             summary=managed_result.summary,
             patch_path=patch_path,
         )
+
+    def _maybe_answer_from_verification(
+        self, run_id: str, task: str
+    ) -> HarnessRunResult | None:
+        lowered = task.lower()
+        if "failing test" not in lowered and "failing tests" not in lowered:
+            return None
+        if not self.config.verification.commands:
+            return None
+
+        self.store.append(
+            run_id,
+            "verification.preflight.started",
+            {"commands": self.config.verification.commands},
+        )
+        results = run_verification(self.root, self.config.verification.commands)
+        for result in results:
+            status = "pass" if result.returncode == 0 else "fail"
+            self.store.append(
+                run_id,
+                "verification.command",
+                {"command": result.command, "status": status},
+            )
+        if not results or any(result.returncode != 0 for result in results):
+            self.store.append(run_id, "verification.preflight.failed")
+            return None
+
+        self.store.append(run_id, "verification.preflight.passed")
+        summary = (
+            "I ran the configured verification commands and they already pass, "
+            "so there are no failing tests to fix."
+        )
+        self._store_managed_result(run_id, ManagedAgentResult(summary=summary))
+        self.store.append(run_id, "patch.empty")
+        return HarnessRunResult(run_id=run_id, summary=summary)
 
     def verify(self, run_id: str | None = None) -> list[VerificationResult]:
         selected = run_id or self.latest_run_id() or "manual"

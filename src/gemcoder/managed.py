@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
-from importlib.util import find_spec
 from pathlib import Path
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
@@ -78,11 +77,25 @@ class ManagedAgentClient:
                 raw=task_packet,
             )
 
+        if self.config.managed_agent.mode in {"generate_content", "generate-content", "direct"}:
+            return self._run_generate_content(task_packet)
+
         body = self.build_interaction_payload(task_packet)
         response = self._post("interactions", body)
         output_text = _extract_output_text(response)
         return ManagedAgentResult(
             summary=output_text or "Managed Agent returned no output text.",
+            patch=_extract_unified_diff(output_text),
+            raw=json.dumps(response, indent=2) + "\n",
+            request=json.dumps(body, indent=2) + "\n",
+        )
+
+    def _run_generate_content(self, task_packet: str) -> ManagedAgentResult:
+        body = self.build_generate_content_payload(task_packet)
+        response = self._post(f"models/{self._model_name()}:generateContent", body)
+        output_text = _extract_output_text(response)
+        return ManagedAgentResult(
+            summary=output_text or "Gemini returned no output text.",
             patch=_extract_unified_diff(output_text),
             raw=json.dumps(response, indent=2) + "\n",
             request=json.dumps(body, indent=2) + "\n",
@@ -124,6 +137,44 @@ class ManagedAgentClient:
             payload["tools"] = tools
         return payload
 
+    def build_generate_content_payload(self, task_packet: str) -> dict[str, Any]:
+        return {
+            "systemInstruction": {
+                "parts": [
+                    {
+                        "text": (
+                            "You are GemCoder using the Gemini generateContent API. "
+                            "You do not have tool or function access. Answer in plain text. "
+                            "When code changes are needed, return a concise summary and a "
+                            "unified diff."
+                        )
+                    }
+                ]
+            },
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [{"text": self._render_generate_content_prompt(task_packet)}],
+                }
+            ],
+        }
+
+    def _render_generate_content_prompt(self, task_packet: str) -> str:
+        sections = [
+            "Task packet:\n```yaml\n" + _strip_tool_oriented_sections(task_packet) + "\n```",
+            "Repository context:",
+        ]
+        for source in build_google_sources(self.root, self.config):
+            target = source.get("target", "unknown")
+            if target.startswith(".agents/skills/"):
+                continue
+            content = source.get("content", "")
+            sections.append(f"\n--- {target} ---\n```\n{content}\n```")
+        return "\n".join(sections)
+
+    def _model_name(self) -> str:
+        return self.config.managed_agent.base_agent.removeprefix("models/")
+
     def _post(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
         headers = {
             "Content-Type": "application/json",
@@ -138,14 +189,6 @@ class ManagedAgentClient:
             payload=payload,
             timeout=self.config.managed_agent.timeout_seconds,
         )
-
-
-def antigravity_sdk_available() -> bool:
-    """Return whether the optional Google Antigravity SDK is installed."""
-    try:
-        return find_spec("google.antigravity") is not None
-    except ModuleNotFoundError:
-        return False
 
 
 def _urllib_transport(
@@ -166,6 +209,10 @@ def _urllib_transport(
         raise ManagedAgentError(f"Managed Agents API returned {exc.code}: {details}") from exc
     except URLError as exc:
         raise ManagedAgentError(f"Managed Agents API request failed: {exc.reason}") from exc
+    except TimeoutError as exc:
+        raise ManagedAgentError(
+            f"Managed Agents API request timed out after {timeout} seconds."
+        ) from exc
 
     if not raw:
         return {}
@@ -234,6 +281,17 @@ def _normalize_tools(tools: list[str | dict[str, Any]]) -> list[dict[str, Any]]:
         elif isinstance(tool, dict):
             normalized.append(tool)
     return normalized
+
+
+def _strip_tool_oriented_sections(task_packet: str) -> str:
+    try:
+        packet = yaml.safe_load(task_packet)
+    except yaml.YAMLError:
+        return task_packet.strip()
+    if not isinstance(packet, dict):
+        return task_packet.strip()
+    packet.pop("skills", None)
+    return yaml.safe_dump(packet, sort_keys=False).strip()
 
 
 def _extract_unified_diff(text: str) -> str:

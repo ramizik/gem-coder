@@ -32,12 +32,11 @@ project:
 
 managed_agent:
   provider: google
-  mode: inline
-  base_agent: antigravity-preview-05-2026
+  mode: generate_content
+  base_agent: gemini-flash-latest
   api_base: https://generativelanguage.googleapis.com/v1beta
   api_revision: "2026-05-20"
   reuse_sessions: true
-  # Optional. Leave empty to use the Antigravity defaults.
   tools: []
 
 harness:

@@ -1,9 +1,17 @@
+import os
 from pathlib import Path
 
+from gemcoder.cli.main import _load_dotenv
 from gemcoder.config import load_config
 from gemcoder.google_sources import build_google_sources
 from gemcoder.harness import HarnessRunner
-from gemcoder.managed import ManagedAgentClient, _extract_output_text, _extract_unified_diff
+from gemcoder.managed import (
+    ManagedAgentClient,
+    ManagedAgentError,
+    _extract_output_text,
+    _extract_unified_diff,
+    _strip_tool_oriented_sections,
+)
 from gemcoder.task_packet import build_task_packet
 from gemcoder.templates import scaffold
 
@@ -24,6 +32,15 @@ def test_load_config_from_scaffold(tmp_path: Path) -> None:
 
     assert config.project.name == tmp_path.name
     assert config.harness.instructions == "AGENTS.md"
+
+
+def test_load_dotenv_accepts_export_syntax(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    (tmp_path / ".env").write_text('export GEMINI_API_KEY="test-key"\n')
+
+    _load_dotenv(tmp_path)
+
+    assert os.environ["GEMINI_API_KEY"] == "test-key"
 
 
 def test_build_task_packet_includes_task_and_skills(tmp_path: Path) -> None:
@@ -56,7 +73,8 @@ def test_context_collection_excludes_env_and_secret_files(tmp_path: Path) -> Non
     assert "/workspace/repo/src/app.py" in targets
 
 
-def test_harness_runner_records_harness_loaded(tmp_path: Path) -> None:
+def test_harness_runner_records_harness_loaded(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     scaffold(tmp_path)
     runner = HarnessRunner(tmp_path)
 
@@ -90,7 +108,8 @@ def test_harness_build_creates_artifacts(tmp_path: Path) -> None:
     assert (tmp_path / ".gemcoder" / "build" / "current.json").exists()
 
 
-def test_run_records_current_build(tmp_path: Path) -> None:
+def test_run_records_current_build(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     scaffold(tmp_path)
     runner = HarnessRunner(tmp_path)
     runner.build()
@@ -99,6 +118,46 @@ def test_run_records_current_build(tmp_path: Path) -> None:
     events = runner.store.read_events(result.run_id)
 
     assert any(event.type == "harness.build.loaded" for event in events)
+
+
+def test_fix_failing_tests_returns_when_verification_already_passes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    scaffold(tmp_path)
+    config = load_config(tmp_path)
+    config.verification.commands = ["echo ok"]
+
+    def fake_run_verification(root, commands):
+        from gemcoder.verify import VerificationResult
+
+        return [VerificationResult(command=commands[0], returncode=0, stdout="ok\n", stderr="")]
+
+    monkeypatch.setattr("gemcoder.harness.run_verification", fake_run_verification)
+
+    result = HarnessRunner(tmp_path, config).run("Fix the failing tests")
+    events = HarnessRunner(tmp_path, config).store.read_events(result.run_id)
+
+    assert "already pass" in result.summary
+    assert any(event.type == "verification.preflight.passed" for event in events)
+    assert not any(event.type == "managed.interaction.started" for event in events)
+
+
+def test_run_records_managed_agent_error(tmp_path: Path, monkeypatch) -> None:
+    scaffold(tmp_path)
+    config = load_config(tmp_path)
+
+    def fake_run_task(self, task_packet):
+        raise ManagedAgentError("boom")
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr("gemcoder.managed.ManagedAgentClient.run_task", fake_run_task)
+
+    runner = HarnessRunner(tmp_path, config)
+    result = runner.run("hello")
+    events = runner.store.read_events(result.run_id)
+
+    assert result.summary == "Managed Agent request failed: boom"
+    assert any(event.type == "managed.interaction.failed" for event in events)
 
 
 def test_google_sources_map_harness_files_to_agent_layout(tmp_path: Path) -> None:
@@ -112,14 +171,14 @@ def test_google_sources_map_harness_files_to_agent_layout(tmp_path: Path) -> Non
     assert ".agents/skills/safe-patch/SKILL.md" in targets
 
 
-def test_managed_agent_interaction_payload_uses_inline_sources(tmp_path: Path) -> None:
+def test_interaction_payload_uses_inline_sources(tmp_path: Path) -> None:
     scaffold(tmp_path)
     config = load_config(tmp_path)
     client = ManagedAgentClient(config, tmp_path, api_key="test-key")
 
     payload = client.build_interaction_payload("goal: Fix tests")
 
-    assert payload["agent"] == "antigravity-preview-05-2026"
+    assert payload["agent"] == "gemini-flash-latest"
     assert payload["input"] == "goal: Fix tests"
     assert payload["environment"]["type"] == "remote"
     assert any(
@@ -129,7 +188,7 @@ def test_managed_agent_interaction_payload_uses_inline_sources(tmp_path: Path) -
     assert "tools" not in payload
 
 
-def test_managed_agent_payload_normalizes_configured_tools(tmp_path: Path) -> None:
+def test_interaction_payload_normalizes_configured_tools(tmp_path: Path) -> None:
     scaffold(tmp_path)
     config = load_config(tmp_path)
     config.managed_agent.tools = ["google_search", {"type": "url_context"}]
@@ -140,14 +199,14 @@ def test_managed_agent_payload_normalizes_configured_tools(tmp_path: Path) -> No
     assert payload["tools"] == [{"type": "google_search"}, {"type": "url_context"}]
 
 
-def test_managed_agent_client_uses_rest_transport(tmp_path: Path) -> None:
+def test_generate_content_client_uses_rest_transport(tmp_path: Path) -> None:
     scaffold(tmp_path)
     config = load_config(tmp_path)
     calls = []
 
     def fake_transport(**kwargs):
         calls.append(kwargs)
-        return {"output_text": "done"}
+        return {"candidates": [{"content": {"parts": [{"text": "done"}]}}]}
 
     client = ManagedAgentClient(
         config,
@@ -160,8 +219,56 @@ def test_managed_agent_client_uses_rest_transport(tmp_path: Path) -> None:
 
     assert result.summary == "done"
     assert calls[0]["method"] == "POST"
-    assert calls[0]["url"].endswith("/interactions")
+    assert calls[0]["url"].endswith("/models/gemini-flash-latest:generateContent")
     assert calls[0]["headers"]["x-goog-api-key"] == "test-key"
+
+
+def test_generate_content_mode_uses_model_endpoint(tmp_path: Path) -> None:
+    scaffold(tmp_path)
+    config = load_config(tmp_path)
+    config.managed_agent.mode = "generate_content"
+    config.managed_agent.base_agent = "gemini-flash-latest"
+    calls = []
+
+    def fake_transport(**kwargs):
+        calls.append(kwargs)
+        return {"candidates": [{"content": {"parts": [{"text": "hello"}]}}]}
+
+    client = ManagedAgentClient(
+        config,
+        tmp_path,
+        api_key="test-key",
+        transport=fake_transport,
+    )
+
+    result = client.run_task("goal: Say hello")
+
+    assert result.summary == "hello"
+    assert calls[0]["url"].endswith("/models/gemini-flash-latest:generateContent")
+    assert "contents" in calls[0]["payload"]
+    assert "systemInstruction" in calls[0]["payload"]
+
+
+def test_generate_content_prompt_strips_skills(tmp_path: Path) -> None:
+    scaffold(tmp_path)
+    config = load_config(tmp_path)
+    config.managed_agent.mode = "generate_content"
+    client = ManagedAgentClient(config, tmp_path, api_key="test-key")
+
+    payload = client.build_generate_content_payload(
+        "goal: hello\nskills:\n  repo-navigation: call tools\n"
+    )
+    prompt = payload["contents"][0]["parts"][0]["text"]
+
+    assert "repo-navigation" not in prompt
+    assert ".agents/skills/" not in prompt
+
+
+def test_strip_tool_oriented_sections_removes_skills() -> None:
+    packet = _strip_tool_oriented_sections("goal: hello\nskills:\n  safe-patch: tools\n")
+
+    assert "goal: hello" in packet
+    assert "skills" not in packet
 
 
 def test_extract_output_text_reads_managed_agent_model_output() -> None:

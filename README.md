@@ -53,6 +53,16 @@ uv run --extra dev pytest
 uv run ruff check .
 ```
 
+Create a local `.env` for the Gemini key. `.env` is ignored by git; keep real
+keys out of commits and shell history.
+
+```bash
+cp .env.example .env
+# edit .env and set GEMINI_API_KEY
+uv run gemcoder doctor
+uv run gemcoder run "Hello"
+```
+
 To run the local package from another repository while developing:
 
 ```bash
@@ -101,13 +111,11 @@ project:
 
 managed_agent:
   provider: google
-  mode: inline
-  base_agent: antigravity-preview-05-2026
+  mode: generate_content
+  base_agent: gemini-flash-latest
   api_base: https://generativelanguage.googleapis.com/v1beta
   api_revision: "2026-05-20"
   reuse_sessions: true
-  # Optional. Leave empty to use the Antigravity defaults:
-  # code_execution, google_search, and url_context.
   tools: []
 
 harness:
@@ -156,7 +164,8 @@ GemCoder supports two Managed Agent modes:
 - `persisted`: `gemcoder agent create` calls `POST /v1beta/agents`, then
   `gemcoder run` invokes the configured `managed_agent.agent_id`.
 
-Set the hackathon key before calling the remote API:
+Set `GEMINI_API_KEY` before calling the remote API, either in your shell or in a
+local `.env` file:
 
 ```bash
 export GEMINI_API_KEY="..."

@@ -13,7 +13,7 @@ from rich.table import Table
 from gemcoder.config import CONFIG_FILE, load_config
 from gemcoder.events import RunStore
 from gemcoder.harness import HarnessRunner
-from gemcoder.managed import ManagedAgentClient, antigravity_sdk_available
+from gemcoder.managed import ManagedAgentClient
 from gemcoder.patcher import apply_patch
 from gemcoder.templates import scaffold
 
@@ -40,6 +40,8 @@ def _load_dotenv(root: Path) -> None:
             continue
         key, _, value = line.partition("=")
         key = key.strip()
+        if key.startswith("export "):
+            key = key.removeprefix("export ").strip()
         value = value.strip().strip('"').strip("'")
         if key and key not in os.environ:
             os.environ[key] = value
@@ -92,11 +94,6 @@ def doctor() -> None:
         "GEMINI_API_KEY",
         "ok" if os.getenv("GEMINI_API_KEY") else "missing",
         "required for Managed Agents",
-    )
-    table.add_row(
-        "Antigravity SDK",
-        "ok" if antigravity_sdk_available() else "optional",
-        "install with: uv sync --extra antigravity",
     )
     table.add_row(
         "Verification",

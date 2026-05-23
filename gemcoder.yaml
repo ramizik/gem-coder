@@ -1,64 +1,58 @@
 project:
   name: gemcoder
-
 managed_agent:
   provider: google
-  mode: inline
-  base_agent: antigravity-preview-05-2026
+  mode: generate_content
+  base_agent: gemini-flash-latest
   api_base: https://generativelanguage.googleapis.com/v1beta
-  api_revision: "2026-05-20"
+  api_revision: '2026-05-20'
   reuse_sessions: true
   tools: []
-
+  timeout_seconds: 60
 harness:
   instructions: AGENTS.md
   skills_dir: .gemcoder/skills
   patch_format: unified_diff
-
 context:
   include:
-    - AGENTS.md
-    - gemcoder.yaml
-    - README.md
-    - docs/**/*
-    - pyproject.toml
-    - src/**/*.py
-    - tests/**/*.py
+  - AGENTS.md
+  - gemcoder.yaml
+  - README.md
+  - docs/**/*
+  - pyproject.toml
+  - src/**/*.py
+  - tests/**/*.py
   exclude:
-    - .git/**
-    - .gemcoder/runs/**
-    - .gemcoder/sessions/**
-    - .gemcoder/evals/**
-    - .gemcoder/cache/**
-    - .venv/**
-    - node_modules/**
-    - __pycache__/**
-    - .pytest_cache/**
-    - .ruff_cache/**
-    - .mypy_cache/**
-    - .superqode/**
-    - .antigravitycli/**
-    - .env
-    - .env.*
-    - "*.pem"
-    - "*.key"
-    - "*secret*"
-    - "*credential*"
+  - .git/**
+  - .gemcoder/runs/**
+  - .gemcoder/sessions/**
+  - .gemcoder/evals/**
+  - .gemcoder/cache/**
+  - .venv/**
+  - node_modules/**
+  - __pycache__/**
+  - .pytest_cache/**
+  - .ruff_cache/**
+  - .mypy_cache/**
+  - .superqode/**
+  - .env
+  - .env.*
+  - '*.pem'
+  - '*.key'
+  - '*secret*'
+  - '*credential*'
   max_files: 60
-
 verification:
   commands:
-    - uv run --extra dev pytest
-    - uv run ruff check .
+  - uv run --extra dev pytest
+  - uv run ruff check .
   require_pass: true
-
 approvals:
   apply_patch: true
   shell_commands: false
-
 optimization:
   enabled: true
   objective:
-    - tests_pass
-    - minimal_diff
-    - low_latency
+  - tests_pass
+  - minimal_diff
+  - low_latency

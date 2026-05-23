@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import signal
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,20 +20,40 @@ class VerificationResult:
 def run_verification(root: str | Path, commands: list[str]) -> list[VerificationResult]:
     results: list[VerificationResult] = []
     for command in commands:
-        completed = subprocess.run(
+        proc = subprocess.Popen(
             command,
             cwd=Path(root),
             shell=True,
             text=True,
-            capture_output=True,
-            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
         )
-        results.append(
-            VerificationResult(
-                command=command,
-                returncode=completed.returncode,
-                stdout=completed.stdout,
-                stderr=completed.stderr,
+        try:
+            stdout, stderr = proc.communicate(timeout=60)
+        except subprocess.TimeoutExpired as exc:
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            proc.communicate()
+            stdout = exc.stdout if isinstance(exc.stdout, str) else ""
+            stderr = exc.stderr if isinstance(exc.stderr, str) else ""
+            results.append(
+                VerificationResult(
+                    command=command,
+                    returncode=124,
+                    stdout=stdout,
+                    stderr=stderr + "\nVerification command timed out after 60 seconds.",
+                )
             )
-        )
+        else:
+            results.append(
+                VerificationResult(
+                    command=command,
+                    returncode=proc.returncode or 0,
+                    stdout=stdout,
+                    stderr=stderr,
+                )
+            )
     return results

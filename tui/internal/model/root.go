@@ -165,7 +165,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !msg.info.Initialized {
 				m.push(roleSystem, "No gemcoder.yaml here. Type /init to scaffold this repo.", "")
 			} else {
-				m.push(roleSystem, "Type a task, ls, pwd, git status, or /help for commands.", "")
+				m.push(roleSystem, "Type a task. Prefix with ! to run a local shell command. /help for commands.", "")
 			}
 		}
 		m.rerender()
@@ -299,8 +299,7 @@ func (m *Model) handleCommand(text string) tea.Cmd {
 				"  /shell <cmd>   run a local inspection command (equivalent to !<cmd>)\n"+
 				"  /quit          exit\n"+
 				"\n"+
-				"Anything you type goes to Gemini as a coding task.\n"+
-				"Prefix with `!` to run a local shell command instead (e.g. `! ls`, `! git status`).",
+				"Anything you type goes to Gemini as a coding task. Prefix with ! to run a local shell command instead (e.g. ! ls, ! git status).",
 			"")
 		m.rerender()
 		return nil
@@ -410,7 +409,7 @@ func (m Model) View() string {
 		}
 		prompt = fmt.Sprintf("%s %s… %ds  (Ctrl+C to cancel)", m.spinner.View(), label, elapsed)
 	}
-	hint := styles.Hint.Render("type → Gemini  ·  !<cmd> → local shell  ·  /apply /verify /init /help /quit  ·  pgup/pgdn scroll  ·  drag + Cmd/Ctrl-C copy")
+	hint := styles.Hint.Render("type → Gemini  ·  !<cmd> → local shell  ·  /shell /apply /verify /help  ·  pgup/pgdn scroll")
 	return strings.Join([]string{header, body, prompt, hint}, "\n")
 }
 
