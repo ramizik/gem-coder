@@ -8,8 +8,13 @@ from typing import Any
 import pytest
 
 from gemcoder.config import GemCoderConfig, OrchestratorConfig
-from gemcoder.managed import ManagedAgentResult
-from gemcoder.orchestrator import Backend, Orchestrator, OrchestratorEvent
+from gemcoder.managed import ManagedAgentError, ManagedAgentResult
+from gemcoder.orchestrator import (
+    Backend,
+    Orchestrator,
+    OrchestratorEvent,
+    ParallelResult,
+)
 from gemcoder.templates import scaffold
 
 
@@ -123,8 +128,6 @@ def test_orchestrator_remote_error_emits_error_event(tmp_path: Path, monkeypatch
     config = _make_config()
     orch = Orchestrator(config, tmp_path)
 
-    from gemcoder.managed import ManagedAgentError
-
     class FailingClient:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             pass
@@ -147,3 +150,92 @@ def test_orchestrator_remote_error_emits_error_event(tmp_path: Path, monkeypatch
     error_event = next(e for e in events if e.kind == "error")
     assert error_event.backend is Backend.REMOTE
     assert "simulated 503" in error_event.text
+
+
+def _make_fake_clients(local_summary: str, remote_summary: str, fail: str | None = None):
+    class FakeLocalClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        def run_task(self, packet: str, on_event=None) -> ManagedAgentResult:
+            if on_event is not None:
+                on_event("token", {"text": local_summary})
+            status = "failed" if fail == "local" else "success"
+            return ManagedAgentResult(
+                summary=local_summary,
+                patch="",
+                raw=local_summary,
+                request=packet,
+                diagnostics={"status": status, "mode": "test-local"},
+            )
+
+    class FakeRemoteClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        def run_task(self, packet: str, on_chunk=None) -> ManagedAgentResult:
+            status = "failed" if fail == "remote" else "success"
+            return ManagedAgentResult(
+                summary=remote_summary,
+                patch="",
+                raw=remote_summary,
+                request=packet,
+                diagnostics={"status": status, "mode": "test-remote"},
+            )
+
+    return FakeLocalClient, FakeRemoteClient
+
+
+def test_backend_parse_accepts_both() -> None:
+    assert Backend.parse("both") is Backend.BOTH
+
+
+def test_run_both_returns_both_sub_results(tmp_path: Path, monkeypatch) -> None:
+    scaffold(tmp_path)
+    config = _make_config()
+    orch = Orchestrator(config, tmp_path)
+    FakeLocal, FakeRemote = _make_fake_clients("L-out", "R-out")
+    monkeypatch.setattr("gemcoder.orchestrator.LocalAgentClient", FakeLocal)
+    monkeypatch.setattr("gemcoder.orchestrator.ManagedAgentClient", FakeRemote)
+
+    events: list[OrchestratorEvent] = []
+    parallel = orch.run_both("packet", task="hi", on_event=events.append)
+
+    assert isinstance(parallel, ParallelResult)
+    backends = {b for b, _r, _t in parallel.results}
+    assert backends == {Backend.LOCAL, Backend.REMOTE}
+    assert parallel.winner in {Backend.LOCAL, Backend.REMOTE}
+    assert parallel.primary.summary in {"L-out", "R-out"}
+
+    kinds = [e.kind for e in events]
+    assert kinds[0] == "backend.selected"
+    assert events[0].backend is Backend.BOTH
+    assert "parallel.complete" in kinds
+
+
+def test_run_both_winner_skips_failed_backend(tmp_path: Path, monkeypatch) -> None:
+    scaffold(tmp_path)
+    config = _make_config()
+    orch = Orchestrator(config, tmp_path)
+    FakeLocal, FakeRemote = _make_fake_clients("L-out", "R-out", fail="remote")
+    monkeypatch.setattr("gemcoder.orchestrator.LocalAgentClient", FakeLocal)
+    monkeypatch.setattr("gemcoder.orchestrator.ManagedAgentClient", FakeRemote)
+
+    parallel = orch.run_both("packet", task="hi")
+
+    # Remote returned status=failed in its diagnostics; local should win.
+    assert parallel.winner is Backend.LOCAL
+    assert parallel.primary.summary == "L-out"
+
+
+def test_orchestrator_run_both_via_resolved_backend(tmp_path: Path, monkeypatch) -> None:
+    scaffold(tmp_path)
+    config = _make_config()
+    orch = Orchestrator(config, tmp_path)
+    FakeLocal, FakeRemote = _make_fake_clients("L", "R")
+    monkeypatch.setattr("gemcoder.orchestrator.LocalAgentClient", FakeLocal)
+    monkeypatch.setattr("gemcoder.orchestrator.ManagedAgentClient", FakeRemote)
+
+    result, resolved = orch.run("packet", task="hi", backend=Backend.BOTH)
+    assert resolved in {Backend.LOCAL, Backend.REMOTE}
+    assert result.summary in {"L", "R"}

@@ -9,9 +9,12 @@ or the TUI — can render progress live.
 from __future__ import annotations
 
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
+from threading import Lock
+from time import perf_counter
 from typing import Any
 
 from gemcoder.config import GemCoderConfig
@@ -24,6 +27,7 @@ class Backend(StrEnum):
     LOCAL = "local"
     REMOTE = "remote"
     AUTO = "auto"
+    BOTH = "both"
 
     @classmethod
     def parse(cls, value: str | None) -> Backend:
@@ -35,6 +39,15 @@ class Backend(StrEnum):
             raise ValueError(
                 f"Unknown backend: {value!r}. Expected one of: local, remote, auto."
             ) from exc
+
+
+@dataclass(slots=True)
+class ParallelResult:
+    """Outcome of `Orchestrator.run_both` — both sub-results plus the winner."""
+
+    results: list[tuple[Backend, ManagedAgentResult, float]]
+    winner: Backend
+    primary: ManagedAgentResult
 
 
 @dataclass(slots=True)
@@ -156,9 +169,117 @@ class Orchestrator:
             )
         )
 
+        if resolved is Backend.BOTH:
+            parallel = self.run_both(
+                task_packet,
+                task=task,
+                on_event=on_event,
+                _already_emitted_selected=True,
+            )
+            return parallel.primary, parallel.winner
         if resolved is Backend.LOCAL:
             return self._run_local(task_packet, emit, on_chunk), resolved
         return self._run_remote(task_packet, emit, on_chunk), resolved
+
+    def run_both(
+        self,
+        task_packet: str,
+        task: str = "",
+        *,
+        on_event: EventCallback | None = None,
+        _already_emitted_selected: bool = False,
+    ) -> ParallelResult:
+        """Fan the same task out to BOTH backends concurrently.
+
+        Returns every sub-result tagged with backend + elapsed time. The
+        winner is the first non-error result (ties broken by completion
+        order). Both `LocalAgentClient.run_task` and
+        `ManagedAgentClient.run_task` are sync at this seam, so a small
+        thread pool is safe (LocalAgentClient owns its own asyncio loop).
+        """
+        lock = Lock()
+
+        def emit(event: OrchestratorEvent) -> None:
+            if on_event is None:
+                return
+            with lock:
+                on_event(event)
+
+        if not _already_emitted_selected:
+            emit(
+                OrchestratorEvent(
+                    kind="backend.selected",
+                    backend=Backend.BOTH,
+                    data={"requested": "both"},
+                )
+            )
+
+        def run_one(backend: Backend) -> tuple[Backend, ManagedAgentResult, float]:
+            started = perf_counter()
+            # Don't forward tokens as raw chunks in parallel mode — the
+            # interleaved deltas would be unreadable. Tokens still flow
+            # into the event stream tagged with backend.
+            if backend is Backend.LOCAL:
+                result = self._run_local(task_packet, emit, on_chunk=None)
+            else:
+                result = self._run_remote(task_packet, emit, on_chunk=None)
+            return backend, result, round(perf_counter() - started, 3)
+
+        ordered: list[tuple[Backend, ManagedAgentResult, float]] = []
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="gemcoder-orch") as pool:
+            futures = {
+                pool.submit(run_one, Backend.LOCAL): Backend.LOCAL,
+                pool.submit(run_one, Backend.REMOTE): Backend.REMOTE,
+            }
+            for future in as_completed(futures):
+                try:
+                    ordered.append(future.result())
+                except ManagedAgentError as exc:
+                    backend = futures[future]
+                    diagnostics = dict(exc.diagnostics) if exc.diagnostics else {}
+                    diagnostics["status"] = "failed"
+                    ordered.append(
+                        (
+                            backend,
+                            ManagedAgentResult(
+                                summary=f"{backend.value} backend failed: {exc}",
+                                diagnostics=diagnostics,
+                            ),
+                            0.0,
+                        )
+                    )
+
+        winner, primary = self._pick_winner(ordered)
+        emit(
+            OrchestratorEvent(
+                kind="parallel.complete",
+                backend=Backend.BOTH,
+                data={
+                    "winner": winner.value,
+                    "results": [
+                        {
+                            "backend": b.value,
+                            "status": (r.diagnostics or {}).get("status"),
+                            "elapsed_seconds": elapsed,
+                            "patch_present": bool(r.patch),
+                        }
+                        for b, r, elapsed in ordered
+                    ],
+                },
+            )
+        )
+        return ParallelResult(results=ordered, winner=winner, primary=primary)
+
+    @staticmethod
+    def _pick_winner(
+        ordered: list[tuple[Backend, ManagedAgentResult, float]],
+    ) -> tuple[Backend, ManagedAgentResult]:
+        """First non-error result wins. If all errored, return the first."""
+        for backend, result, _elapsed in ordered:
+            if (result.diagnostics or {}).get("status") != "failed":
+                return backend, result
+        backend, result, _ = ordered[0]
+        return backend, result
 
     def _run_local(
         self,
@@ -246,4 +367,10 @@ class Orchestrator:
         return result
 
 
-__all__ = ["Backend", "EventCallback", "Orchestrator", "OrchestratorEvent"]
+__all__ = [
+    "Backend",
+    "EventCallback",
+    "Orchestrator",
+    "OrchestratorEvent",
+    "ParallelResult",
+]

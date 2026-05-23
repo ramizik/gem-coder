@@ -210,37 +210,60 @@ class HarnessRunner:
                 "model": self.config.managed_agent.base_agent,
             },
         )
-        try:
-            managed_result, resolved_backend = orchestrator.run(
-                packet,
-                task=task,
-                backend=backend,
-                on_event=record_event,
-                on_chunk=on_chunk,
+
+        requested = (
+            backend if backend is not None else self.config.orchestrator.default_backend
+        )
+        resolved_request = orchestrator.resolve_backend(requested, task)
+
+        if resolved_request is Backend.BOTH:
+            parallel = orchestrator.run_both(
+                packet, task=task, on_event=record_event
             )
-        except ManagedAgentError as exc:
-            managed_result = ManagedAgentResult(
-                summary=f"Managed Agent request failed: {exc}",
-                request=packet,
-                diagnostics=exc.diagnostics,
-            )
-            resolved_backend = Backend.REMOTE
-            self.store.append(
-                run_id,
-                "managed.interaction.failed",
-                {"error": str(exc)},
-            )
-            self.store.append(
-                run_id,
-                "provider.request.failed",
-                {"error": str(exc), **exc.diagnostics},
-            )
-        else:
+            managed_result = parallel.primary
+            resolved_backend = parallel.winner
+            self._store_parallel_results(run_id, parallel)
             self.store.append(
                 run_id,
                 "provider.request.finished",
-                {"backend": resolved_backend.value, **(managed_result.diagnostics or {})},
+                {
+                    "backend": resolved_backend.value,
+                    "parallel": True,
+                    **(managed_result.diagnostics or {}),
+                },
             )
+        else:
+            try:
+                managed_result, resolved_backend = orchestrator.run(
+                    packet,
+                    task=task,
+                    backend=resolved_request,
+                    on_event=record_event,
+                    on_chunk=on_chunk,
+                )
+            except ManagedAgentError as exc:
+                managed_result = ManagedAgentResult(
+                    summary=f"Managed Agent request failed: {exc}",
+                    request=packet,
+                    diagnostics=exc.diagnostics,
+                )
+                resolved_backend = Backend.REMOTE
+                self.store.append(
+                    run_id,
+                    "managed.interaction.failed",
+                    {"error": str(exc)},
+                )
+                self.store.append(
+                    run_id,
+                    "provider.request.failed",
+                    {"error": str(exc), **exc.diagnostics},
+                )
+            else:
+                self.store.append(
+                    run_id,
+                    "provider.request.finished",
+                    {"backend": resolved_backend.value, **(managed_result.diagnostics or {})},
+                )
         self._store_managed_result(run_id, managed_result)
 
         patch_path: str | None = None
@@ -322,6 +345,29 @@ class HarnessRunner:
     def latest_run_id(self) -> str | None:
         runs = self.store.list_runs()
         return runs[-1] if runs else None
+
+    def _store_parallel_results(self, run_id: str, parallel) -> None:
+        """Persist each backend's full result + patch when running BOTH."""
+        for backend, sub_result, elapsed in parallel.results:
+            slug = backend.value
+            self.store.write_artifact(
+                run_id,
+                f"managed-result-{slug}.json",
+                json.dumps(asdict(sub_result), indent=2) + "\n",
+            )
+            if sub_result.patch:
+                self.store.write_artifact(run_id, f"patch-{slug}.diff", sub_result.patch)
+            self.store.append(
+                run_id,
+                "parallel.result",
+                {
+                    "backend": slug,
+                    "status": (sub_result.diagnostics or {}).get("status"),
+                    "elapsed_seconds": elapsed,
+                    "patch_present": bool(sub_result.patch),
+                    "is_winner": backend is parallel.winner,
+                },
+            )
 
     def _store_managed_result(self, run_id: str, result: ManagedAgentResult) -> None:
         self.store.append(run_id, "managed.result.received", {"summary": result.summary})
