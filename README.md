@@ -8,8 +8,12 @@ OpenCode is too much. OpenClaw is too little. And the AI vendors push you into a
 language, different rules — so don't settle for someone else's. GemCoder lets you
 **build and customize your own**: what the agent does (`AGENTS.md`), the skills it
 uses (`.gemcoder/skills/`), what it can touch, how it verifies, and where it runs
-(`gemcoder.yaml`) — all version-controlled files you own. **Harness as code.** Don't
-be scared to build your own.
+(`gemcoder.yaml`) — all version-controlled files you own. **Harness as code.**
+
+And it's not all-or-nothing. **Don't be scared to build your own** — but you don't
+have to do it all: run your own models and extend/connect anything (custom tools,
+MCP servers), *or* connect to others and reuse existing tools and harnesses. Either
+way, you're never locked in.
 
 It turns that harness into a repo-aware developer workflow with project
 instructions, skills, structured task packets, patch previews, local
