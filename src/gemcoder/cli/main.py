@@ -72,8 +72,11 @@ def _doctor_payload(root: Path) -> dict[str, object]:
             "mode": config.managed_agent.mode,
             "model": config.managed_agent.base_agent,
             "api_base": config.managed_agent.api_base,
+            "auth_type": config.managed_agent.auth_type,
             "timeout_seconds": config.managed_agent.timeout_seconds,
-            "auth_present": bool(os.getenv("GEMINI_API_KEY")),
+            "auth_present": bool(os.getenv(config.managed_agent.api_key_env))
+            if config.managed_agent.auth_type == "api_key"
+            else bool(os.getenv(config.managed_agent.access_token_env)),
         },
         "verification": {"commands": config.verification.commands},
     }

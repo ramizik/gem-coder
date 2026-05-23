@@ -65,7 +65,7 @@ class ManagedAgentClient:
     ) -> None:
         self.config = config
         self.root = Path(root)
-        self.api_key = api_key if api_key is not None else os.getenv("GEMINI_API_KEY")
+        self.api_key = api_key if api_key is not None else self._load_credential()
         self.transport = transport or _urllib_transport
         self.last_diagnostics: dict[str, Any] = {}
 
@@ -137,8 +137,8 @@ class ManagedAgentClient:
         )
         headers = {
             "Content-Type": "application/json",
-            "x-goog-api-key": self.api_key or "",
             "Api-Revision": self.config.managed_agent.api_revision,
+            **self._auth_headers(),
         }
         request = Request(
             url=url, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST"
@@ -200,11 +200,10 @@ class ManagedAgentClient:
             "id": agent_id,
             "base_agent": self.config.managed_agent.base_agent,
             "system_instruction": self.config.managed_agent.system_instruction,
-            "base_environment": {
-                "type": "remote",
-                "sources": build_google_sources(self.root, self.config),
-            },
+            "base_environment": self._remote_environment(),
         }
+        if self.config.managed_agent.description:
+            payload["description"] = self.config.managed_agent.description
         tools = _normalize_tools(self.config.managed_agent.tools)
         if tools:
             payload["tools"] = tools
@@ -216,19 +215,37 @@ class ManagedAgentClient:
             agent = self.config.managed_agent.agent_id or agent
 
         payload: dict[str, Any] = {
+            "stream": self.config.managed_agent.stream,
+            "background": self.config.managed_agent.background,
+            "store": self.config.managed_agent.store,
             "agent": agent,
-            "input": task_packet,
-            "system_instruction": self.config.managed_agent.system_instruction,
+            "input": [
+                {
+                    "type": "user_input",
+                    "content": [{"type": "text", "text": task_packet}],
+                }
+            ],
         }
         if self.config.managed_agent.mode not in {"persisted", "agent"}:
-            payload["environment"] = {
-                "type": "remote",
-                "sources": build_google_sources(self.root, self.config),
-            }
+            payload["environment"] = self._remote_environment()
         tools = _normalize_tools(self.config.managed_agent.tools)
         if tools:
             payload["tools"] = tools
         return payload
+
+    def _remote_environment(self) -> dict[str, Any]:
+        environment: dict[str, Any] = {
+            "type": "remote",
+            "sources": build_google_sources(self.root, self.config),
+        }
+        allowlist = [
+            {"domain": domain.strip()}
+            for domain in self.config.managed_agent.network_allowlist
+            if domain.strip()
+        ]
+        if allowlist:
+            environment["network"] = {"allowlist": allowlist}
+        return environment
 
     def build_generate_content_payload(self, task_packet: str) -> dict[str, Any]:
         return {
@@ -273,11 +290,21 @@ class ManagedAgentClient:
             return self.config.managed_agent.agent_id or self.config.managed_agent.base_agent
         return self._model_name()
 
+    def _load_credential(self) -> str | None:
+        if self.config.managed_agent.auth_type == "bearer":
+            return os.getenv(self.config.managed_agent.access_token_env)
+        return os.getenv(self.config.managed_agent.api_key_env)
+
+    def _auth_headers(self) -> dict[str, str]:
+        if self.config.managed_agent.auth_type == "bearer":
+            return {"Authorization": f"Bearer {self.api_key or ''}"}
+        return {"x-goog-api-key": self.api_key or ""}
+
     def _post(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
         headers = {
             "Content-Type": "application/json",
-            "x-goog-api-key": self.api_key or "",
             "Api-Revision": self.config.managed_agent.api_revision,
+            **self._auth_headers(),
         }
         url = f"{self.config.managed_agent.api_base.rstrip('/')}/{endpoint.lstrip('/')}"
         started = perf_counter()

@@ -177,12 +177,21 @@ def test_google_sources_map_harness_files_to_agent_layout(tmp_path: Path) -> Non
 def test_interaction_payload_uses_inline_sources(tmp_path: Path) -> None:
     scaffold(tmp_path)
     config = load_config(tmp_path)
+    config.managed_agent.mode = "managed_agent"
     client = ManagedAgentClient(config, tmp_path, api_key="test-key")
 
     payload = client.build_interaction_payload("goal: Fix tests")
 
     assert payload["agent"] == "gemini-flash-latest"
-    assert payload["input"] == "goal: Fix tests"
+    assert payload["stream"] is True
+    assert payload["background"] is True
+    assert payload["store"] is True
+    assert payload["input"] == [
+        {
+            "type": "user_input",
+            "content": [{"type": "text", "text": "goal: Fix tests"}],
+        }
+    ]
     assert payload["environment"]["type"] == "remote"
     assert any(
         source["target"] == ".agents/AGENTS.md"
@@ -191,9 +200,54 @@ def test_interaction_payload_uses_inline_sources(tmp_path: Path) -> None:
     assert "tools" not in payload
 
 
+def test_create_agent_payload_supports_managed_agents_environment_options(
+    tmp_path: Path,
+) -> None:
+    scaffold(tmp_path)
+    config = load_config(tmp_path)
+    config.managed_agent.base_agent = "antigravity-preview-05-2026"
+    config.managed_agent.description = "GemCoder managed coding agent"
+    config.managed_agent.network_allowlist = ["pypi.org", "files.pythonhosted.org"]
+    client = ManagedAgentClient(config, tmp_path, api_key="test-key")
+
+    payload = client.build_create_agent_payload()
+
+    assert payload["base_agent"] == "antigravity-preview-05-2026"
+    assert payload["description"] == "GemCoder managed coding agent"
+    assert payload["base_environment"]["network"] == {
+        "allowlist": [{"domain": "pypi.org"}, {"domain": "files.pythonhosted.org"}]
+    }
+    assert any(
+        source["target"] == ".agents/AGENTS.md"
+        for source in payload["base_environment"]["sources"]
+    )
+
+
+def test_bearer_auth_uses_authorization_header(tmp_path: Path, monkeypatch) -> None:
+    scaffold(tmp_path)
+    config = load_config(tmp_path)
+    config.managed_agent.mode = "managed_agent"
+    config.managed_agent.auth_type = "bearer"
+    monkeypatch.setenv("GOOGLE_OAUTH_ACCESS_TOKEN", "access-token")
+    calls = []
+
+    def fake_transport(**kwargs):
+        calls.append(kwargs)
+        return {"output_text": "done"}
+
+    client = ManagedAgentClient(config, tmp_path, transport=fake_transport)
+
+    result = client.run_task("goal: Fix tests")
+
+    assert result.summary == "done"
+    assert calls[0]["headers"]["Authorization"] == "Bearer access-token"
+    assert "x-goog-api-key" not in calls[0]["headers"]
+
+
 def test_interaction_payload_normalizes_configured_tools(tmp_path: Path) -> None:
     scaffold(tmp_path)
     config = load_config(tmp_path)
+    config.managed_agent.mode = "managed_agent"
     config.managed_agent.tools = ["google_search", {"type": "url_context"}]
     client = ManagedAgentClient(config, tmp_path, api_key="test-key")
 

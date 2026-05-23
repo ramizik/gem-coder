@@ -19,10 +19,14 @@ class ManagedAgentConfig(BaseModel):
     provider: str = "google"
     mode: str = "generate_content"
     base_agent: str = "gemini-flash-latest"
+    description: str | None = None
     api_base: str = "https://generativelanguage.googleapis.com/v1beta"
     api_revision: str = "2026-05-20"
     reuse_sessions: bool = True
     agent_id: str | None = None
+    auth_type: str = "api_key"
+    api_key_env: str = "GEMINI_API_KEY"
+    access_token_env: str = "GOOGLE_OAUTH_ACCESS_TOKEN"
     system_instruction: str = (
         "You are GemCoder running inside a managed coding environment. "
         "Read the mounted repository files, follow the mounted AGENTS.md and skills, "
@@ -30,6 +34,10 @@ class ManagedAgentConfig(BaseModel):
         "a concise summary plus a unified diff when code changes are needed."
     )
     tools: list[str | dict[str, Any]] = Field(default_factory=list)
+    stream: bool = True
+    background: bool = True
+    store: bool = True
+    network_allowlist: list[str] = Field(default_factory=list)
     timeout_seconds: int = 60
 
 

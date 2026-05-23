@@ -113,10 +113,18 @@ managed_agent:
   provider: google
   mode: generate_content
   base_agent: gemini-flash-latest
+  description: GemCoder managed coding agent
   api_base: https://generativelanguage.googleapis.com/v1beta
   api_revision: "2026-05-20"
   reuse_sessions: true
+  auth_type: api_key
+  api_key_env: GEMINI_API_KEY
+  access_token_env: GOOGLE_OAUTH_ACCESS_TOKEN
   tools: []
+  stream: true
+  background: true
+  store: true
+  network_allowlist: []
 
 harness:
   instructions: AGENTS.md
@@ -155,14 +163,19 @@ The first version focuses on the Managed Agents API:
 - run store and graph
 - basic eval command
 
-## Managed Agent API Flow
+## Google Managed Agents Flow
 
-GemCoder supports two Managed Agent modes:
+GemCoder supports both the lightweight Gemini `generateContent` path and the
+Google Managed Agents `interactions`/`agents` path.
 
-- `inline`: `gemcoder run` calls `POST /v1beta/interactions` with the current
-  harness mounted inline. This is the fastest hackathon loop.
-- `persisted`: `gemcoder agent create` calls `POST /v1beta/agents`, then
-  `gemcoder run` invokes the configured `managed_agent.agent_id`.
+- `generate_content`: calls Gemini `models/<model>:generateContent` with inline
+  repository context. This is the easiest local smoke-test path.
+- `managed_agent` or `inline`: calls Managed Agents `POST /interactions` with
+  `stream`, `background`, `store`, structured user input, and the current
+  `AGENTS.md`, skills, and repository context mounted into a remote sandbox.
+- `persisted`: `gemcoder agent create` calls `POST /agents` with the same remote
+  sandbox configuration, then `gemcoder run` invokes the configured
+  `managed_agent.agent_id`.
 
 Set `GEMINI_API_KEY` before calling the remote API, either in your shell or in a
 local `.env` file:
@@ -172,6 +185,31 @@ export GEMINI_API_KEY="..."
 gemcoder harness build
 gemcoder run "Fix the failing tests"
 ```
+
+For Gemini Enterprise Agent Platform / Vertex AI Managed Agents, use the Agent
+Platform endpoint and bearer auth:
+
+```yaml
+managed_agent:
+  mode: managed_agent
+  base_agent: antigravity-preview-05-2026
+  api_base: https://aiplatform.googleapis.com/v1beta1/projects/PROJECT_ID/locations/global
+  auth_type: bearer
+  access_token_env: GOOGLE_OAUTH_ACCESS_TOKEN
+  network_allowlist:
+    - pypi.org
+    - files.pythonhosted.org
+```
+
+Then provide a short-lived access token:
+
+```bash
+export GOOGLE_OAUTH_ACCESS_TOKEN="$(gcloud auth print-access-token)"
+gemcoder run "Fix the failing tests"
+```
+
+Leave `network_allowlist` empty unless the managed sandbox needs internet access
+for package downloads or external APIs.
 
 For each run, GemCoder stores `managed-request.json`, `managed-response.json`,
 `managed-result.json`, `run-summary.json`, `task-packet.yaml`, and the event
@@ -203,7 +241,8 @@ If a run fails, GemCoder records safe diagnostics such as provider mode, model,
 endpoint, elapsed seconds, HTTP status, and error type in `run-summary.json`.
 It does not store or print `GEMINI_API_KEY`. Common fixes:
 
-- `401` or `403`: rotate/check `GEMINI_API_KEY` and confirm model/API access.
+- `401` or `403`: rotate/check `GEMINI_API_KEY` or
+  `GOOGLE_OAUTH_ACCESS_TOKEN`, and confirm model/API access.
 - `404`: check `managed_agent.base_agent` and `managed_agent.api_base`.
 - `timeout`: retry, reduce the task/context size, or increase
   `managed_agent.timeout_seconds`.
