@@ -203,14 +203,21 @@ def run(
             console.print(f"[dim]→ backend: {event.backend.value}[/dim]")
         elif event.kind == "tool_call":
             name = event.data.get("name", "tool")
-            console.print(f"[cyan]· tool {name}[/cyan]")
+            console.print(f"[cyan]· {event.backend.value} tool {name}[/cyan]")
         elif event.kind == "thought":
-            # thoughts can be noisy; only show first line
             line = (event.text or "").splitlines()[0] if event.text else ""
             if line:
-                console.print(f"[magenta]· {line}[/magenta]")
+                console.print(f"[magenta]· {event.backend.value} {line}[/magenta]")
+        elif event.kind == "parallel.complete":
+            winner = event.data.get("winner", "?")
+            console.print(f"[green]✓ parallel done — winner: {winner}[/green]")
+        elif event.kind == "diagnostic" and resolved is Backend.BOTH:
+            status = event.data.get("status", "?")
+            elapsed = event.data.get("elapsed_seconds")
+            elapsed_str = f" {elapsed}s" if elapsed is not None else ""
+            console.print(f"[dim]· {event.backend.value} {status}{elapsed_str}[/dim]")
         elif event.kind == "error":
-            console.print(f"[red]error: {event.text}[/red]")
+            console.print(f"[red]error ({event.backend.value}): {event.text}[/red]")
 
     result = HarnessRunner(root, config).run(
         task, on_chunk=on_chunk, backend=backend_choice, on_event=on_event
@@ -238,6 +245,8 @@ def run(
                 title=f"[red]Run {result.run_id} failed[/red]",
             )
         )
+    elif resolved is Backend.BOTH:
+        _render_parallel_panels(root, result.run_id, diagnostics.get("backend", "?"))
     else:
         elapsed = diagnostics.get("elapsed_seconds")
         backend_value = diagnostics.get("backend", "?")
@@ -246,6 +255,25 @@ def run(
             subtitle += f" · {elapsed}s"
         console.print(Panel(result.summary, title=f"Run {result.run_id}{subtitle}"))
     console.print(f"Artifacts: {artifacts_dir}")
+
+
+def _render_parallel_panels(root: Path, run_id: str, winner: str) -> None:
+    """Show one panel per backend after a `--backend both` run."""
+    run_dir = root / ".gemcoder" / "runs" / run_id
+    for backend in ("local", "remote"):
+        path = run_dir / f"managed-result-{backend}.json"
+        if not path.exists():
+            continue
+        data = json.loads(path.read_text())
+        summary = data.get("summary", "(no summary)")
+        diag = data.get("diagnostics") or {}
+        status = diag.get("status", "?")
+        elapsed = diag.get("elapsed_seconds")
+        elapsed_str = f" · {elapsed}s" if elapsed is not None else ""
+        marker = " ★" if backend == winner else ""
+        title = f"{backend}{marker} · {status}{elapsed_str}"
+        color = "green" if backend == winner else "blue"
+        console.print(Panel(summary, title=f"[{color}]{title}[/{color}]"))
 
 
 def _failure_guidance(diagnostics: dict[str, object]) -> str:
@@ -410,6 +438,52 @@ def serve() -> None:
     """Serve GemCoder over JSON-RPC 2.0 on stdio (used by the TUI)."""
     from gemcoder.serve import serve as _serve
     _serve(Path.cwd())
+
+
+@app.command()
+def smoke(
+    prompt: str = typer.Argument("Say hello in five words.", help="Prompt to send."),
+    backend: str = typer.Option(
+        "remote",
+        "--backend",
+        "-b",
+        help="local | remote | both. Default: remote.",
+    ),
+    timeout: int = typer.Option(30, "--timeout", help="Per-backend timeout (seconds)."),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON."),
+) -> None:
+    """Single-shot live API ping. Verifies credentials + reachability.
+
+    Requires GEMINI_API_KEY (or whatever `managed_agent.api_key_env` is set to).
+    Does NOT package the repo as a task packet — it sends `prompt` directly,
+    so latency and token counts reflect the round-trip floor of the backend.
+    """
+    root = Path.cwd()
+    config = load_config(root)
+    config.managed_agent.timeout_seconds = timeout
+    try:
+        backend_choice = Backend.parse(backend)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    from gemcoder.smoke import smoke_test
+
+    results = smoke_test(config, root, prompt, backend_choice)
+    if json_output:
+        _print_json({"prompt": prompt, "results": results})
+        return
+
+    any_ok = any(r["status"] == "ok" for r in results)
+    for r in results:
+        color = "green" if r["status"] == "ok" else "red"
+        title = (
+            f"[{color}]{r['backend']} · {r['status']} · "
+            f"{r.get('elapsed_seconds', '?')}s[/{color}]"
+        )
+        body = r.get("preview", r.get("error", "(no body)"))
+        console.print(Panel(body, title=title))
+    if not any_ok:
+        raise typer.Exit(code=1)
 
 
 @app.command()
