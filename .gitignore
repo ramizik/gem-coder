@@ -8,6 +8,14 @@ __pycache__/
 .gemcoder/sessions/
 .gemcoder/evals/
 .gemcoder/cache/
+.gemcoder/tui.log
+.gemcoder/serve.log
+
+# Compiled Go TUI binary (built by `make tui`)
+src/gemcoder/_bin/
+
+# Local agent tooling
+.omc/
 dist/
 build/
 *.egg-info/

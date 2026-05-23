@@ -14,15 +14,27 @@ from rich.table import Table
 
 from gemcoder.config import CONFIG_FILE, load_config
 from gemcoder.events import RunStore
-from gemcoder.managed import ManagedAgentClient
+from gemcoder.managed import ManagedAgentClient, ManagedAgentError
+from gemcoder.patcher import apply_patch
 from gemcoder.task_packet import build_task_packet
 from gemcoder.templates import scaffold
 from gemcoder.verify import run_verification
 
-app = typer.Typer(help="Optimisable CLI/TUI coding harness for Gemini Managed Agents.")
+app = typer.Typer(
+    help="GemCoder — chat-style coding agent for Gemini. Run `gemcoder` to launch the TUI.",
+    invoke_without_command=True,
+    no_args_is_help=False,
+)
 agent_app = typer.Typer(help="Managed Agent commands.")
 app.add_typer(agent_app, name="agent")
 console = Console()
+
+
+@app.callback()
+def _default(ctx: typer.Context) -> None:
+    """Launch the chat TUI when no subcommand is given."""
+    if ctx.invoked_subcommand is None:
+        tui()
 
 
 @app.command()
@@ -95,7 +107,12 @@ def run(task: str = typer.Argument(..., help="Coding task to run.")) -> None:
 
     client = ManagedAgentClient(config)
     store.append(run_id, "managed.interaction.started", {"provider": config.managed_agent.provider})
-    result = client.run_task(packet)
+    try:
+        result = client.run_task(packet)
+    except ManagedAgentError as exc:
+        store.append(run_id, "managed.error", {"error": str(exc)})
+        console.print(f"[red]Managed Agent error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
     store.append(run_id, "managed.result.received", {"summary": result.summary})
     store.write_artifact(run_id, "managed-result.json", json.dumps(asdict(result), indent=2) + "\n")
 
@@ -128,6 +145,55 @@ def graph(
 
 
 @app.command()
+def apply(
+    run_id: str | None = typer.Argument(None, help="Run id. Defaults to latest run."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Validate only, do not write."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip approval prompt."),
+) -> None:
+    """Apply a run's patch to the working tree via `git apply`."""
+    root = Path.cwd()
+    config = load_config(root)
+    store = RunStore(root)
+    selected = run_id
+    if selected is None:
+        runs = store.list_runs()
+        if not runs:
+            raise typer.BadParameter("No runs found.")
+        selected = runs[-1]
+    patch_path = root / ".gemcoder" / "runs" / selected / "patch.diff"
+    if not patch_path.exists():
+        raise typer.BadParameter(f"No patch.diff for run {selected}.")
+    patch_text = patch_path.read_text()
+    if not patch_text.strip():
+        console.print("[yellow]Patch is empty. Nothing to apply.[/yellow]")
+        return
+
+    if config.approvals.apply_patch and not dry_run and not yes:
+        if not typer.confirm(f"Apply patch from {selected} to working tree?"):
+            console.print("[yellow]Aborted.[/yellow]")
+            raise typer.Exit(code=1)
+
+    store.append(selected, "patch.apply.started", {"dry_run": dry_run})
+    result = apply_patch(root, patch_text, dry_run=dry_run)
+    event = "patch.apply.checked" if dry_run else "patch.apply.applied"
+    if not result.ok:
+        event = "patch.apply.failed"
+    store.append(
+        selected,
+        event,
+        {"files": result.files, "stderr": result.stderr.strip()[:500]},
+    )
+    if result.ok:
+        verb = "Would apply" if dry_run else "Applied"
+        console.print(f"[green]{verb}[/green] {len(result.files)} file(s):")
+        for path in result.files:
+            console.print(f"  - {path}")
+    else:
+        console.print(f"[red]git apply failed:[/red]\n{result.stderr}")
+        raise typer.Exit(code=1)
+
+
+@app.command()
 def verify(run_id: str | None = typer.Argument(None, help="Run id to verify.")) -> None:
     """Run configured local verification commands."""
     root = Path.cwd()
@@ -155,14 +221,35 @@ def verify(run_id: str | None = typer.Argument(None, help="Run id to verify.")) 
 
 @app.command()
 def tui() -> None:
-    """Launch the GemCoder TUI placeholder."""
+    """Launch the Bubble Tea TUI (requires `make tui` to build the Go binary)."""
+    import shutil
+    candidates = [
+        Path(__file__).resolve().parent.parent / "_bin" / "gemcoder-tui",
+        Path.cwd() / "src" / "gemcoder" / "_bin" / "gemcoder-tui",
+    ]
+    on_path = shutil.which("gemcoder-tui")
+    if on_path:
+        candidates.insert(0, Path(on_path))
+    for path in candidates:
+        if path.exists() and os.access(path, os.X_OK):
+            os.execvp(str(path), [str(path)])
     console.print(
         Panel(
-            "TUI implementation placeholder.\n\n"
-            "MVP layout: timeline, chat/output, patch preview, verification status.",
+            "Bubble Tea TUI binary not found.\n\n"
+            "Build it with:\n"
+            "  [bold]brew install go[/bold]   (one-time)\n"
+            "  [bold]make tui[/bold]          (from the gemcoder checkout)\n\n"
+            "Then re-run [bold]gemcoder tui[/bold].",
             title="GemCoder TUI",
         )
     )
+
+
+@app.command()
+def serve() -> None:
+    """Serve GemCoder over JSON-RPC 2.0 on stdio (used by the TUI)."""
+    from gemcoder.serve import serve as _serve
+    _serve(Path.cwd())
 
 
 @app.command()

@@ -7,6 +7,7 @@ from pathlib import Path
 import yaml
 
 from gemcoder.config import GemCoderConfig
+from gemcoder.repo_snapshot import collect_repo_snapshot
 
 
 def read_text_if_exists(path: Path) -> str:
@@ -29,11 +30,13 @@ def build_task_packet(root: str | Path, task: str, config: GemCoderConfig) -> st
     base = Path(root)
     instructions = read_text_if_exists(base / config.harness.instructions)
     skills = load_skills(base, config)
+    files = collect_repo_snapshot(base)
     payload = {
         "goal": task,
         "repo": {
             "name": config.project.name,
             "test_commands": config.verification.commands,
+            "files": files,
         },
         "instructions": instructions,
         "skills": skills,
