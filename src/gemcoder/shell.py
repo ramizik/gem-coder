@@ -37,6 +37,14 @@ def run_shell_command(root: str | Path, command: str) -> ShellResult:
     )
 
 
+def is_allowed_shell_command(command: str) -> bool:
+    try:
+        _parse_allowed_command(command)
+    except ValueError:
+        return False
+    return True
+
+
 def _parse_allowed_command(command: str) -> list[str]:
     try:
         parts = shlex.split(command)

@@ -320,11 +320,22 @@ func (m *Model) handleCommand(text string) tea.Cmd {
 				"  /init [force]  scaffold gemcoder in this repo\n"+
 				"  /apply         apply the most recent run's patch\n"+
 				"  /verify        run configured verification commands\n"+
+				"  /reset         clear conversation history (start a fresh session)\n"+
 				"  /shell <cmd>   run a local inspection command (equivalent to !<cmd>)\n"+
 				"  /quit          exit\n"+
 				"\n"+
-				"Anything you type goes to Gemini as a coding task. Prefix with ! to run a local shell command instead (e.g. ! ls, ! git status).",
+				"Anything you type goes to Gemini as a coding task with the last 10 turns of context. Prefix with ! to run a local shell command instead (e.g. ! ls, ! git status).",
 			"")
+		m.rerender()
+		return nil
+	case "/reset":
+		if err := m.client.ResetSession(); err != nil {
+			m.push(roleError, "reset failed: "+err.Error(), "")
+		} else {
+			m.history = nil
+			m.lastRunID = ""
+			m.push(roleSystem, "Conversation history cleared.", "")
+		}
 		m.rerender()
 		return nil
 	case "/shell", "/sh":

@@ -158,7 +158,10 @@ class HarnessRunner:
         manifest["manifest_path"] = str(manifest_path.relative_to(self.root))
         return manifest
 
-    def run(self, task: str, on_chunk=None) -> HarnessRunResult:
+    def run(self, task: str, on_chunk=None, history=None) -> HarnessRunResult:
+        # POLICY: every task always goes through the LLM harness. Do NOT add
+        # local-shell auto-detection here (e.g. matching `ls`/`pwd`/`git status`).
+        # User explicitly wants only the TUI `!` prefix to bypass the harness.
         run_id = self.store.create_run(task)
         self.store.append(run_id, "harness.loaded", self.inspect_harness())
         build_manifest = self.current_build_manifest()
@@ -169,7 +172,7 @@ class HarnessRunner:
         if preflight is not None:
             return preflight
 
-        packet = build_task_packet(self.root, task, self.config)
+        packet = build_task_packet(self.root, task, self.config, conversation_history=history)
         self.store.append(run_id, "task.packet.created")
         self.store.write_artifact(run_id, "task-packet.yaml", packet)
 

@@ -92,6 +92,11 @@ def _get_run(root: Path, run_id: str) -> dict[str, Any]:
     return {"record": record, "summary": summary, "patch": patch}
 
 
+# Per-server-process conversation history. Cleared by `reset_session`.
+_SESSION_HISTORY: list[dict[str, str]] = []
+_SESSION_HISTORY_MAX_TURNS = 10  # cap to keep token budget bounded
+
+
 def _start_run(root: Path, task: str) -> dict[str, Any]:
     def on_chunk(delta: str) -> None:
         sys.stdout.write(
@@ -102,13 +107,22 @@ def _start_run(root: Path, task: str) -> dict[str, Any]:
         )
         sys.stdout.flush()
 
-    result = HarnessRunner(root).run(task, on_chunk=on_chunk)
+    history = _SESSION_HISTORY[-(_SESSION_HISTORY_MAX_TURNS * 2):] or None
+    result = HarnessRunner(root).run(task, on_chunk=on_chunk, history=history)
+    _SESSION_HISTORY.append({"role": "user", "content": task})
+    _SESSION_HISTORY.append({"role": "assistant", "content": result.summary})
     patch = ""
     if result.patch_path:
         patch_file = root / result.patch_path
         if patch_file.exists():
             patch = patch_file.read_text()
     return {"run_id": result.run_id, "summary": result.summary, "patch": patch}
+
+
+def _reset_session() -> dict[str, Any]:
+    cleared = len(_SESSION_HISTORY) // 2
+    _SESSION_HISTORY.clear()
+    return {"cleared_turns": cleared}
 
 
 def _apply(root: Path, run_id: str | None = None, dry_run: bool = False) -> dict[str, Any]:
@@ -170,6 +184,7 @@ def _build_dispatch(root: Path) -> dict[str, Callable[..., Any]]:
         "apply": lambda run_id=None, dry_run=False: _apply(root, run_id, dry_run),
         "verify": lambda run_id=None: _verify(root, run_id),
         "shell": lambda command: _shell(root, command),
+        "reset_session": lambda: _reset_session(),
     }
 
 

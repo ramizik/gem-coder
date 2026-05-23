@@ -204,6 +204,10 @@ func (c *Client) Verify(runID string) ([]VerifyResult, error) {
 	return out, c.Call("verify", params, &out)
 }
 
+func (c *Client) ResetSession() error {
+	return c.Call("reset_session", nil, nil)
+}
+
 func (c *Client) ListRuns() ([]string, error) {
 	var out []string
 	return out, c.Call("list_runs", nil, &out)

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+from dataclasses import asdict
 from pathlib import Path
 
 import typer
@@ -27,6 +29,54 @@ harness_app = typer.Typer(help="Harness inspection commands.")
 app.add_typer(agent_app, name="agent")
 app.add_typer(harness_app, name="harness")
 console = Console()
+
+
+def _print_json(payload: dict[str, object] | list[object]) -> None:
+    typer.echo(json.dumps(payload, indent=2) + "\n")
+
+
+def _doctor_payload(root: Path) -> dict[str, object]:
+    config_path = root / CONFIG_FILE
+    config = load_config(root)
+    checks = [
+        {
+            "name": "config",
+            "status": "ok" if config_path.exists() else "missing",
+            "details": str(config_path),
+        },
+        {
+            "name": "instructions",
+            "status": "ok" if (root / config.harness.instructions).exists() else "missing",
+            "details": config.harness.instructions,
+        },
+        {
+            "name": "skills",
+            "status": "ok" if (root / config.harness.skills_dir).exists() else "missing",
+            "details": config.harness.skills_dir,
+        },
+        {
+            "name": "gemini_api_key",
+            "status": "ok" if os.getenv("GEMINI_API_KEY") else "missing",
+            "details": "required for Managed Agents",
+        },
+        {
+            "name": "verification",
+            "status": "ok" if config.verification.commands else "not configured",
+            "details": ", ".join(config.verification.commands) or "none",
+        },
+    ]
+    return {
+        "checks": checks,
+        "provider": {
+            "name": config.managed_agent.provider,
+            "mode": config.managed_agent.mode,
+            "model": config.managed_agent.base_agent,
+            "api_base": config.managed_agent.api_base,
+            "timeout_seconds": config.managed_agent.timeout_seconds,
+            "auth_present": bool(os.getenv("GEMINI_API_KEY")),
+        },
+        "verification": {"commands": config.verification.commands},
+    }
 
 
 def _load_dotenv(root: Path) -> None:
@@ -70,38 +120,25 @@ def init(
 
 
 @app.command()
-def doctor() -> None:
+def doctor(
+    json_output: bool = typer.Option(False, "--json", help="Output JSON."),
+) -> None:
     """Check local project and Managed Agent readiness."""
     root = Path.cwd()
-    config_path = root / CONFIG_FILE
-    config = load_config(root)
+    payload = _doctor_payload(root)
+    if json_output:
+        _print_json(payload)
+        return
+
     table = Table(title="GemCoder Doctor")
     table.add_column("Check")
     table.add_column("Status")
     table.add_column("Details")
-    table.add_row("Config", "ok" if config_path.exists() else "missing", str(config_path))
-    table.add_row(
-        "Instructions",
-        "ok" if (root / config.harness.instructions).exists() else "missing",
-        config.harness.instructions,
-    )
-    table.add_row(
-        "Skills",
-        "ok" if (root / config.harness.skills_dir).exists() else "missing",
-        config.harness.skills_dir,
-    )
-    table.add_row(
-        "GEMINI_API_KEY",
-        "ok" if os.getenv("GEMINI_API_KEY") else "missing",
-        "required for Managed Agents",
-    )
-    table.add_row("Provider mode", config.managed_agent.mode, config.managed_agent.provider)
-    table.add_row("Model/agent", "configured", config.managed_agent.base_agent)
-    table.add_row(
-        "Verification",
-        "ok" if config.verification.commands else "not configured",
-        ", ".join(config.verification.commands) or "none",
-    )
+    for check in payload["checks"]:
+        table.add_row(str(check["name"]), str(check["status"]), str(check["details"]))
+    provider = payload["provider"]
+    table.add_row("Provider mode", str(provider["mode"]), str(provider["name"]))
+    table.add_row("Model/agent", "configured", str(provider["model"]))
     console.print(table)
 
 
@@ -116,19 +153,36 @@ def agent_create() -> None:
 
 
 @app.command()
-def run(task: str = typer.Argument(..., help="Coding task to run.")) -> None:
+def run(
+    task: str = typer.Argument(..., help="Coding task to run."),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON."),
+) -> None:
     """Run a coding task through GemCoder."""
     root = Path.cwd()
     config = load_config(root)
-    console.print(
-        "[dim]Provider: "
-        f"{config.managed_agent.provider} "
-        f"mode={config.managed_agent.mode} "
-        f"model={config.managed_agent.base_agent} "
-        f"auth={'present' if os.getenv('GEMINI_API_KEY') else 'missing'}[/dim]"
-    )
+    if not json_output:
+        console.print(
+            "[dim]Provider: "
+            f"{config.managed_agent.provider} "
+            f"mode={config.managed_agent.mode} "
+            f"model={config.managed_agent.base_agent} "
+            f"auth={'present' if os.getenv('GEMINI_API_KEY') else 'missing'}[/dim]"
+        )
     result = HarnessRunner(root, config).run(task)
     diagnostics = result.diagnostics or {}
+    artifacts_dir = f".gemcoder/runs/{result.run_id}"
+    if json_output:
+        _print_json(
+            {
+                "run_id": result.run_id,
+                "summary": result.summary,
+                "patch_path": result.patch_path,
+                "diagnostics": diagnostics,
+                "artifacts_dir": artifacts_dir,
+            }
+        )
+        return
+
     if diagnostics.get("status") == "failed":
         console.print(
             Panel(
@@ -140,7 +194,7 @@ def run(task: str = typer.Argument(..., help="Coding task to run.")) -> None:
         elapsed = diagnostics.get("elapsed_seconds")
         subtitle = f" ({elapsed}s)" if elapsed is not None else ""
         console.print(Panel(result.summary, title=f"Run {result.run_id}{subtitle}"))
-    console.print(f"Artifacts: .gemcoder/runs/{result.run_id}")
+    console.print(f"Artifacts: {artifacts_dir}")
 
 
 def _failure_guidance(diagnostics: dict[str, object]) -> str:
@@ -160,6 +214,7 @@ def _failure_guidance(diagnostics: dict[str, object]) -> str:
 @app.command()
 def graph(
     run_id: str | None = typer.Argument(None, help="Run id. Defaults to latest run."),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON."),
 ) -> None:
     """Show a text graph for a run."""
     store = RunStore(Path.cwd())
@@ -170,6 +225,10 @@ def graph(
             raise typer.BadParameter("No runs found.")
         selected = runs[-1]
     events = store.read_events(selected)
+    if json_output:
+        _print_json({"run_id": selected, "events": [asdict(event) for event in events]})
+        return
+
     console.print(f"[bold]GemCoder run graph: {selected}[/bold]")
     for event in events:
         console.print(f"- {event.timestamp}  [cyan]{event.type}[/cyan] {event.data}")
@@ -225,9 +284,18 @@ def apply(
 
 
 @app.command()
-def verify(run_id: str | None = typer.Argument(None, help="Run id to verify.")) -> None:
+def verify(
+    run_id: str | None = typer.Argument(None, help="Run id to verify."),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON."),
+) -> None:
     """Run configured local verification commands."""
-    results = HarnessRunner(Path.cwd()).verify(run_id)
+    runner = HarnessRunner(Path.cwd())
+    selected = run_id or runner.latest_run_id() or "manual"
+    results = runner.verify(run_id)
+    if json_output:
+        _print_json({"run_id": selected, "results": [asdict(result) for result in results]})
+        return
+
     for result in results:
         status = "pass" if result.returncode == 0 else "fail"
         console.print(f"[bold]{result.command}[/bold]: {status}")

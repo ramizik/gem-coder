@@ -85,12 +85,18 @@ def collect_context_files(root: Path, config: GemCoderConfig) -> list[str]:
     return files
 
 
-def build_task_packet(root: str | Path, task: str, config: GemCoderConfig) -> str:
+def build_task_packet(
+    root: str | Path,
+    task: str,
+    config: GemCoderConfig,
+    *,
+    conversation_history: list[dict[str, str]] | None = None,
+) -> str:
     base = Path(root)
     instructions = read_text_if_exists(base / config.harness.instructions)
     skills = load_skills(base, config)
     context_files = collect_context_files(base, config)
-    payload = {
+    payload: dict[str, object] = {
         "goal": task,
         "repo": {
             "name": config.project.name,
@@ -113,4 +119,6 @@ def build_task_packet(root: str | Path, task: str, config: GemCoderConfig) -> st
             "final_summary": "short",
         },
     }
+    if conversation_history:
+        payload["conversation_history"] = conversation_history
     return yaml.safe_dump(payload, sort_keys=False)

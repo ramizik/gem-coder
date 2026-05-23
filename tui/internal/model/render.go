@@ -4,8 +4,23 @@ import (
 	"os"
 	"strings"
 
+	"github.com/charmbracelet/glamour"
+
 	"github.com/superagentic-ai/gemcoder/tui/internal/styles"
 )
+
+// glamourRenderer is a process-wide renderer reused across messages.
+// nil means initialization failed; we fall back to plain text in that case.
+var glamourRenderer = func() *glamour.TermRenderer {
+	r, err := glamour.NewTermRenderer(
+		glamour.WithAutoStyle(),
+		glamour.WithWordWrap(0), // let the viewport handle wrapping
+	)
+	if err != nil {
+		return nil
+	}
+	return r
+}()
 
 func renderMessage(m message, width int) string {
 	var b strings.Builder
@@ -17,7 +32,7 @@ func renderMessage(m message, width int) string {
 	case roleAgent:
 		b.WriteString(styles.AgentMark.Render("✦"))
 		b.WriteString(" ")
-		b.WriteString(m.text)
+		b.WriteString(renderAgentProse(m.text, m.streaming))
 		if strings.TrimSpace(m.diff) != "" {
 			b.WriteString("\n\n")
 			b.WriteString(indent(renderDiff(m.diff), "    "))
@@ -28,6 +43,19 @@ func renderMessage(m message, width int) string {
 		b.WriteString(styles.Err.Render("✖ " + m.text))
 	}
 	return b.String()
+}
+
+// renderAgentProse glamour-renders agent text once streaming is complete.
+// During streaming we render plain so partial markdown doesn't reflow noisily.
+func renderAgentProse(text string, streaming bool) string {
+	if streaming || glamourRenderer == nil || text == "" {
+		return text
+	}
+	out, err := glamourRenderer.Render(text)
+	if err != nil {
+		return text
+	}
+	return strings.TrimRight(out, "\n")
 }
 
 func renderDiff(diff string) string {
