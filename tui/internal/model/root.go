@@ -329,7 +329,7 @@ func (m Model) View() string {
 	if m.busy {
 		prompt = m.spinner.View() + " thinking… (press Ctrl+C to cancel)"
 	}
-	hint := styles.Hint.Render("/apply  /verify  /init  /help  /quit")
+	hint := styles.Hint.Render("/apply  /verify  /init  /help  /quit   ·  pgup/pgdn scroll  ·  drag to select + Cmd/Ctrl-C to copy")
 	return strings.Join([]string{header, body, prompt, hint}, "\n")
 }
 

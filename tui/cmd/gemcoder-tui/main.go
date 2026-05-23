@@ -34,7 +34,8 @@ func main() {
 		go io.Copy(io.Discard, client.Stderr())
 	}
 
-	p := tea.NewProgram(model.New(client), tea.WithAltScreen(), tea.WithMouseCellMotion())
+	// No mouse capture: terminal's native click-drag selection + Cmd/Ctrl+C copy stays available.
+	p := tea.NewProgram(model.New(client), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fatalf("tui error: %v", err)
 	}
