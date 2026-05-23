@@ -11,8 +11,10 @@ Build with **ADK 2.0 (Python)**. Deploy to **Managed Agents (Interactions API)**
 > adopted as GemCoder's **local backend** (the "embed the harness / self-host"
 > layer in the table below): run the same harness on the developer's machine for
 > lighter tasks. **ADK 2.0 + Managed Agents** remain the build + cloud path for
-> bigger tasks. They are **complementary layers, not alternatives** — same engine,
-> so local↔cloud parity. The "Direct dependency on Antigravity SDK" rejection
+> bigger tasks. They are **complementary layers, not alternatives** — different
+> engines (Antigravity SDK local, ADK 2.0 cloud) running one shared harness
+> definition, so local↔cloud parity at the definition layer. The "Direct
+> dependency on Antigravity SDK" rejection
 > below is **superseded** (see the amended note there).
 
 ## How the 6 Google agent pieces actually layer
@@ -33,7 +35,7 @@ Build with **ADK 2.0 (Python)**. Deploy to **Managed Agents (Interactions API)**
 3. **Adopt A2A for inter-agent calls** — sets up the multi-agent roadmap item (subagents, scheduled tasks) without locking us in to Google. Use `a2a-sdk` (Python).
 4. **Skip Agent Executor for now** — preview and overkill until GemCoder needs durable hour-long runs on our own k8s. Note as eventual "self-hosted enterprise" deploy target.
 5. **Skip the Antigravity desktop app** — it *is* the competitor.
-6. **Antigravity SDK is optional** — only pull it in if GemCoder needs to also run *without* Google hosting the sandbox.
+6. **Antigravity SDK is the local backend (adopted).** Per the 2026-05-23 "use both" decision it is no longer optional: it runs the same harness on the developer's machine (local runtime) for lighter tasks, complementing the ADK 2.0 + Managed Agents cloud path. Different engine, shared harness definition.
 
 **One-line pick:** ADK 2.0, deployed to Managed Agents.
 
@@ -53,7 +55,7 @@ These decisions are *direction*, not a single PR. Concrete plan:
 ## What this decision rejects
 
 - **Antigravity desktop app / CLI as a dependency.** They're the competitor product surface, not a building block.
-- ~~**Direct dependency on Antigravity SDK.**~~ **Superseded (2026-05-23, "use both"):** the Antigravity SDK is now adopted for the **local backend** — running the harness on the dev's machine with the same engine as Managed Agents (local↔cloud parity). Managed Agents stays the cloud runtime; the SDK is the local-runtime layer, not a redundant copy.
+- ~~**Direct dependency on Antigravity SDK.**~~ **Superseded (2026-05-23, "use both"):** the Antigravity SDK is now adopted for the **local backend** — running the harness on the dev's machine as a **different engine** from the ADK 2.0 + Managed Agents cloud path, but driven by the same harness definition (local↔cloud parity at the definition layer). Managed Agents stays the cloud runtime; the SDK is the local-runtime layer, not a redundant copy.
 - **Agent Executor short-term.** Preview status, infra investment, no user pull yet.
 
 ## Open questions

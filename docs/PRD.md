@@ -480,37 +480,41 @@ approval before adopting
 - multi-agent workflows
 - hosted dashboard
 
-## 16. Hackathon Demo
+## 16. Hackathon Demo (1-Minute Run-of-Show)
 
-Use a small broken repo.
+The demo's job is **demo effect + felt value in 60 seconds**, not a feature tour.
+We show one relatable, dev-focused scenario and let the autonomous loop be the
+"wow": a human types one plain sentence, walks away, and a verified fix lands.
+**Do not** demo eval, optimize, connectors, agent-create, or the long command
+list — they dilute the magic moment. Keep tooling invisible; show the outcome.
 
-Demo script:
+**Stage before you present** (off-camera, so the demo is pre-warmed and never
+stalls on setup):
 
 ```bash
 export GEMINI_API_KEY=...
-gemcoder init
-gemcoder doctor
-gemcoder agent create
-gemcoder tui
+gemcoder init        # repo already has a small, relatable failing test
+gemcoder tui         # land here, prompt empty, ready to type
 ```
 
-In the TUI:
+Pick a repo a regular person recognizes — e.g. a tiny budget/todo CLI with one
+obviously broken behavior and a red test. The value reads instantly: "my little
+app was broken; one sentence fixed it."
 
-```text
-Fix the failing tests and add a regression test.
-```
+**The 60 seconds (talk track lives in `docs/DEMO.md`):**
 
-Show:
+| ~Time | On screen | What you say |
+| --- | --- | --- |
+| 0:00 | Type one sentence in the TUI: *"Fix the failing test and add a regression test."* | "I just tell it what I want — in plain English." |
+| 0:05 | Hit enter, hands off the keyboard | "Now I do nothing. It runs the whole loop itself." |
+| 0:10 | Run timeline streams; patch preview builds | "It reads the repo, finds the bug, writes the fix — I see every step." |
+| 0:30 | Approve the patch (one keypress) | "I stay in control — nothing touches my code until I say so." |
+| 0:40 | Local verification runs, tests go green | "It applied the fix and verified it locally. Green." |
+| 0:50 | Graph snaps to the full run | "One sentence in, a verified fix out. That's GemCoder." |
 
-1. Agent session starts.
-2. Task packet appears.
-3. Managed Agent works.
-4. Patch preview appears.
-5. User approves apply.
-6. Local tests run.
-7. Tests pass.
-8. Graph shows full execution.
-9. `gemcoder eval` shows harness score for the demo task.
+The two beats that must land: **(1) hands-off autonomy** (type once, walk away)
+and **(2) trustworthy control** (you approve, it verifies). Everything else is
+cut for time.
 
 ## 17. Success Criteria
 
@@ -537,7 +541,13 @@ Post-MVP success:
 ## 18. Platform & Backends (updated 2026-05-23)
 
 GemCoder runs the **same** harness definition on two backends, chosen by task size
-(decision record: `docs/platform-decision.md` — "use both"):
+(decision record: `docs/platform-decision.md` — "use both"). An **orchestrator**
+(`src/gemcoder/orchestrator.py`, `docs/orchestrator.md`) picks the backend per run —
+`auto` by heuristic (context files/bytes + task length, + whether the local SDK is
+installed), or pinned via `gemcoder run --backend local|remote|auto` /
+`orchestrator.default_backend`. Every run emits a unified live event stream
+(`backend.selected`, `token`, `tool_call`, `diagnostic`, `complete`) to the CLI, the
+TUI (with `/backend` + a live step trail), and `.gemcoder/runs/<id>/events.jsonl`.
 
 - **Local backend — Antigravity SDK.** For lighter tasks, the harness runs on the
   developer's machine via the `google-antigravity` SDK's local runtime
@@ -546,9 +556,13 @@ GemCoder runs the **same** harness definition on two backends, chosen by task si
   custom tools and governance (hooks/policies). The model is Gemini via
   `GEMINI_API_KEY` ("local" = the loop runs locally, not an on-device model).
 - **Cloud backend — ADK 2.0 + Managed Agents.** For bigger tasks, the harness is
-  built with **ADK 2.0** and deployed to **Managed Agents** (Interactions API) —
-  an isolated cloud Linux sandbox. This path works end-to-end today (commit
-  `c9fcc0e`). **A2A** is the roadmap transport for subagents.
+  built as an **ADK 2.0** agent and deployed to **Managed Agents** (Interactions
+  API) — an isolated cloud Linux sandbox. What works end-to-end today (commit
+  `c9fcc0e`) is the *direct-HTTP* Managed Agents path in `src/gemcoder/managed.py`;
+  rebuilding it on ADK 2.0 is **Phase 1** in `docs/platform-decision.md`. **A2A** is
+  the roadmap transport for subagents.
 
-Same engine across both ⇒ **local↔cloud parity**; the patch is the interchange
-contract and `apply`/`verify` stay the gated local steps regardless of backend.
+The two backends are **different engines** (Antigravity SDK local, ADK 2.0 cloud);
+the **same harness definition** runs on both ⇒ local↔cloud parity at the definition
+layer. The patch is the interchange contract and `apply`/`verify` stay the gated
+local steps regardless of backend.

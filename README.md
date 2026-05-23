@@ -9,8 +9,11 @@ verification, run graphs, and harness evaluation.
 **Two backends, one harness.** GemCoder uses the Google agent stack at the right
 layer for each task: the **Antigravity SDK** runs the harness **locally** (the
 agentic loop on your machine) for lighter tasks, and **ADK 2.0 + Managed Agents**
-run it in the **cloud** for bigger ones — same engine, so local↔cloud stay in
-parity. Switch with `agent.backend`. See [`docs/platform-decision.md`](docs/platform-decision.md).
+run it in the **cloud** for bigger ones — two engines, one shared harness
+definition. GemCoder's **orchestrator** routes each task (small/quick → local,
+big → cloud), or pin it with `gemcoder run --backend local|remote|auto` (default
+from `orchestrator.default_backend`). See [`docs/orchestrator.md`](docs/orchestrator.md)
+and [`docs/platform-decision.md`](docs/platform-decision.md).
 
 ## Why GemCoder
 
@@ -47,6 +50,21 @@ gemcoder tui
 
 The TUI is the main developer surface. It shows the task, Managed Agent status,
 run timeline, patch preview, changed files, and local verification result.
+
+## 1-Minute Demo
+
+The shortest path to the "wow": type one plain sentence, hand off the keyboard,
+and watch a verified fix land. No heavy setup, no dozen tools — the value is the
+hands-off loop, not the toolbox.
+
+```bash
+gemcoder tui
+# then type: Fix the failing test and add a regression test.
+```
+
+Type once → it reads the repo, writes the fix, you approve, it verifies locally,
+tests go green. See [`docs/DEMO.md`](docs/DEMO.md) for the full 60-second
+run-of-show and talk track.
 
 ## Development Setup
 
