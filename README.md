@@ -1,8 +1,17 @@
 # GemCoder
 
-GemCoder is an optimisable CLI and TUI coding harness for Gemini Managed Agents.
+**GemCoder is the tool for building your *own* coding agent harness** — defined as
+code, in your repo, customized to your workspace.
 
-It turns Managed Agents into a repo-aware developer workflow with project
+OpenCode is too much. OpenClaw is too little. And the AI vendors push you into a
+*closed* harness you can't change. But every project is different — different
+language, different rules — so don't settle for someone else's. GemCoder lets you
+**build and customize your own**: what the agent does (`AGENTS.md`), the skills it
+uses (`.gemcoder/skills/`), what it can touch, how it verifies, and where it runs
+(`gemcoder.yaml`) — all version-controlled files you own. **Harness as code.** Don't
+be scared to build your own.
+
+It turns that harness into a repo-aware developer workflow with project
 instructions, skills, structured task packets, patch previews, local
 verification, run graphs, and harness evaluation.
 
@@ -286,5 +295,7 @@ After the Managed-Agents-first MVP:
 
 ## Product Statement
 
-GemCoder is an optimisable CLI/TUI coding harness for Gemini Managed Agents.
-It makes Managed Agents useful as a disciplined developer coding workflow.
+GemCoder is the tool for building your own coding agent harness — as code, in your
+repo, customized to your workspace. Not too much, not too little, not closed: you
+define it, extend it, and own it, then run it (local or cloud) with review, apply,
+and verify under your control.
