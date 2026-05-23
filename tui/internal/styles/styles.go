@@ -37,6 +37,10 @@ var (
 		Foreground(Subtle).
 		Italic(true)
 
+	StepMeta = lipgloss.NewStyle().
+			Foreground(Dim).
+			Italic(true)
+
 	Err = lipgloss.NewStyle().
 		Foreground(Bad).
 		Bold(true)

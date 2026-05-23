@@ -148,6 +148,7 @@ def test_fix_failing_tests_returns_when_verification_already_passes(
 def test_run_records_managed_agent_error(tmp_path: Path, monkeypatch) -> None:
     scaffold(tmp_path)
     config = load_config(tmp_path)
+    config.orchestrator.default_backend = "remote"
 
     def fake_run_task(self, task_packet, **kwargs):
         raise ManagedAgentError("boom")
@@ -373,6 +374,7 @@ def test_failure_guidance_is_actionable() -> None:
 def test_harness_records_provider_events_and_run_summary(tmp_path: Path, monkeypatch) -> None:
     scaffold(tmp_path)
     config = load_config(tmp_path)
+    config.orchestrator.default_backend = "remote"
 
     def fake_transport(**kwargs):
         return {"candidates": [{"content": {"parts": [{"text": "hello"}]}}]}

@@ -223,9 +223,13 @@ func (c *Client) GetRun(runID string) (*RunDetail, error) {
 	return &out, c.Call("get_run", map[string]string{"run_id": runID}, &out)
 }
 
-func (c *Client) StartRun(task string) (*RunDetail, error) {
+func (c *Client) StartRun(task, backend string) (*RunDetail, error) {
 	var out RunDetail
-	return &out, c.Call("start_run", map[string]string{"task": task}, &out)
+	params := map[string]string{"task": task}
+	if backend != "" {
+		params["backend"] = backend
+	}
+	return &out, c.Call("start_run", params, &out)
 }
 
 func (c *Client) Apply(runID string, dryRun bool) (*ApplyResult, error) {

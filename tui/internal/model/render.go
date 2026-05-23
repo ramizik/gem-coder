@@ -39,6 +39,8 @@ func renderMessage(m message, width int) string {
 		}
 	case roleSystem:
 		b.WriteString(styles.System.Render(m.text))
+	case roleStep:
+		b.WriteString(styles.StepMeta.Render(m.text))
 	case roleError:
 		b.WriteString(styles.Err.Render("✖ " + m.text))
 	}

@@ -64,7 +64,8 @@ def test_auto_falls_back_to_remote_when_local_sdk_missing(tmp_path: Path) -> Non
         max_files_local=10_000, max_bytes_local=10**9, max_task_chars_local=10**6
     )
     orch = Orchestrator(config, tmp_path)
-    # google-antigravity isn't installed in this test environment.
+    orch._local_available = lambda: False  # type: ignore[method-assign]
+
     assert orch._local_available() is False
     assert orch.resolve_backend("auto", task="hi") is Backend.REMOTE
 

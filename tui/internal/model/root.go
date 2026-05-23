@@ -23,6 +23,7 @@ const (
 	roleAgent
 	roleSystem
 	roleError
+	roleStep
 )
 
 type message struct {
@@ -37,6 +38,15 @@ type message struct {
 // StreamChunkMsg is exported so main.go's RPC notification handler can send it.
 type StreamChunkMsg struct {
 	Delta string
+}
+
+// StreamEventMsg carries one orchestrator step event from the JSON-RPC
+// `run.event` notification so the TUI can render a live step line.
+type StreamEventMsg struct {
+	Kind    string
+	Backend string
+	Text    string
+	Data    string
 }
 
 type infoMsg struct {
@@ -78,12 +88,13 @@ type Model struct {
 	viewport viewport.Model
 	spinner  spinner.Model
 
-	busy      bool
-	busyStart time.Time
-	busyLabel string
-	lastRunID string
-	width     int
-	height    int
+	busy           bool
+	busyStart      time.Time
+	busyLabel      string
+	lastRunID      string
+	currentBackend string
+	width          int
+	height         int
 }
 
 func New(client *rpc.Client) Model {
@@ -119,8 +130,9 @@ func (m Model) fetchInfo() tea.Cmd {
 }
 
 func (m Model) startRun(task string) tea.Cmd {
+	backend := m.currentBackend
 	return func() tea.Msg {
-		d, err := m.client.StartRun(task)
+		d, err := m.client.StartRun(task, backend)
 		return runDoneMsg{detail: d, err: err}
 	}
 }
@@ -184,6 +196,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.history = append(m.history, message{role: roleAgent, text: msg.Delta, streaming: true})
 		} else {
 			m.history[idx].text += msg.Delta
+		}
+		m.rerender()
+	case StreamEventMsg:
+		// `token` is already streamed via run.chunk; skip to avoid double-render.
+		if msg.Kind == "token" {
+			break
+		}
+		line := formatStepEvent(msg)
+		if line == "" {
+			break
+		}
+		// Steps render as their own dim italic line, kept above any later
+		// agent prose so the user sees the full step trail as it happens.
+		idx := m.lastStreamingAgentIdx()
+		stepMsg := message{role: roleStep, text: line}
+		if idx < 0 {
+			m.history = append(m.history, stepMsg)
+		} else {
+			// Insert step line just before the in-flight streaming agent
+			// message so prose stays at the bottom.
+			m.history = append(m.history, message{})
+			copy(m.history[idx+1:], m.history[idx:])
+			m.history[idx] = stepMsg
 		}
 		m.rerender()
 	case runDoneMsg:
@@ -322,10 +357,40 @@ func (m *Model) handleCommand(text string) tea.Cmd {
 				"  /verify        run configured verification commands\n"+
 				"  /reset         clear conversation history (start a fresh session)\n"+
 				"  /shell <cmd>   run a local inspection command (equivalent to !<cmd>)\n"+
+				"  /backend [local|remote|auto]  show or set the backend for new runs\n"+
 				"  /quit          exit\n"+
 				"\n"+
 				"Anything you type goes to Gemini as a coding task with the last 10 turns of context. Prefix with ! to run a local shell command instead (e.g. ! ls, ! git status).",
 			"")
+		m.rerender()
+		return nil
+	case "/backend":
+		if len(parts) < 2 {
+			label := m.currentBackend
+			if label == "" {
+				label = "auto (server default)"
+			}
+			m.push(roleSystem, "Current backend: "+label, "")
+			m.rerender()
+			return nil
+		}
+		switch parts[1] {
+		case "local":
+			m.currentBackend = "antigravity_local"
+		case "remote":
+			m.currentBackend = "managed_agent"
+		case "auto":
+			m.currentBackend = ""
+		default:
+			m.push(roleError, "Usage: /backend [local|remote|auto]", "")
+			m.rerender()
+			return nil
+		}
+		label := m.currentBackend
+		if label == "" {
+			label = "auto (server default)"
+		}
+		m.push(roleSystem, "Backend set to: "+label, "")
 		m.rerender()
 		return nil
 	case "/reset":
@@ -461,7 +526,43 @@ func (m Model) headerText() string {
 	if m.info == nil {
 		return "GemCoder"
 	}
-	return fmt.Sprintf("GemCoder · %s · %s", m.info.Model, prettyRoot(m.info.Root))
+	base := fmt.Sprintf("GemCoder · %s · %s", m.info.Model, prettyRoot(m.info.Root))
+	if m.currentBackend != "" {
+		base += " · backend:" + m.currentBackend
+	}
+	return base
+}
+
+// formatStepEvent renders a single run.event notification as a one-line
+// step trail entry, e.g. `· backend.selected [local]: routing to local SDK`.
+// Returns "" for events that should not be shown (empty / uninteresting).
+func formatStepEvent(msg StreamEventMsg) string {
+	kind := msg.Kind
+	if kind == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("· ")
+	b.WriteString(kind)
+	if msg.Backend != "" {
+		b.WriteString(" [")
+		b.WriteString(msg.Backend)
+		b.WriteString("]")
+	}
+	text := strings.TrimSpace(msg.Text)
+	if text != "" {
+		// Keep step lines compact; collapse newlines so one event = one line.
+		text = strings.ReplaceAll(text, "\n", " ")
+		if len(text) > 160 {
+			text = text[:157] + "…"
+		}
+		b.WriteString(": ")
+		b.WriteString(text)
+	} else if msg.Data != "" && msg.Data != "{}" {
+		b.WriteString(" ")
+		b.WriteString(msg.Data)
+	}
+	return b.String()
 }
 
 func prettyRoot(p string) string {

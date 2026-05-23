@@ -38,16 +38,32 @@ func main() {
 	// No mouse capture: terminal's native click-drag selection + Cmd/Ctrl+C copy stays available.
 	p := tea.NewProgram(model.New(client), tea.WithAltScreen())
 	client.SetNotificationHandler(func(method string, params json.RawMessage) {
-		if method != "run.chunk" {
-			return
+		switch method {
+		case "run.chunk":
+			var payload struct {
+				Delta string `json:"delta"`
+			}
+			if err := json.Unmarshal(params, &payload); err != nil {
+				return
+			}
+			p.Send(model.StreamChunkMsg{Delta: payload.Delta})
+		case "run.event":
+			var payload struct {
+				Kind    string          `json:"kind"`
+				Backend string          `json:"backend"`
+				Text    string          `json:"text"`
+				Data    json.RawMessage `json:"data"`
+			}
+			if err := json.Unmarshal(params, &payload); err != nil {
+				return
+			}
+			p.Send(model.StreamEventMsg{
+				Kind:    payload.Kind,
+				Backend: payload.Backend,
+				Text:    payload.Text,
+				Data:    string(payload.Data),
+			})
 		}
-		var payload struct {
-			Delta string `json:"delta"`
-		}
-		if err := json.Unmarshal(params, &payload); err != nil {
-			return
-		}
-		p.Send(model.StreamChunkMsg{Delta: payload.Delta})
 	})
 	if _, err := p.Run(); err != nil {
 		fatalf("tui error: %v", err)
