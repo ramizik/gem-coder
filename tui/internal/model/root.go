@@ -4,6 +4,7 @@ package model
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -57,6 +58,11 @@ type initDoneMsg struct {
 	err    error
 }
 
+type shellDoneMsg struct {
+	result *rpc.ShellResult
+	err    error
+}
+
 type Model struct {
 	client *rpc.Client
 
@@ -66,10 +72,12 @@ type Model struct {
 	viewport viewport.Model
 	spinner  spinner.Model
 
-	busy        bool
-	lastRunID   string
-	width       int
-	height      int
+	busy      bool
+	busyStart time.Time
+	busyLabel string
+	lastRunID string
+	width     int
+	height    int
 }
 
 func New(client *rpc.Client) Model {
@@ -132,6 +140,13 @@ func (m Model) initRepo() tea.Cmd {
 	}
 }
 
+func (m Model) shell(command string) tea.Cmd {
+	return func() tea.Msg {
+		r, err := m.client.Shell(command)
+		return shellDoneMsg{result: r, err: err}
+	}
+}
+
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
@@ -150,7 +165,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !msg.info.Initialized {
 				m.push(roleSystem, "No gemcoder.yaml here. Type /init to scaffold this repo.", "")
 			} else {
-				m.push(roleSystem, "Type a task. Slash commands: /apply /verify /init /help /quit", "")
+				m.push(roleSystem, "Type a task, ls, pwd, git status, or /help for commands.", "")
 			}
 		}
 		m.rerender()
@@ -203,6 +218,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		cmds = append(cmds, m.fetchInfo())
 		m.rerender()
+	case shellDoneMsg:
+		m.busy = false
+		if msg.err != nil {
+			m.push(roleError, "shell failed: "+msg.err.Error(), "")
+		} else {
+			m.push(roleSystem, renderShellResult(msg.result), "")
+		}
+		m.rerender()
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
@@ -239,8 +262,24 @@ func (m *Model) handleInput(text string) tea.Cmd {
 	if strings.HasPrefix(text, "/") {
 		return m.handleCommand(text)
 	}
+	if strings.HasPrefix(text, "!") {
+		command := strings.TrimSpace(text[1:])
+		if command == "" {
+			m.push(roleError, "Usage: ! <command>   (e.g. ! ls, ! git status)", "")
+			m.rerender()
+			return nil
+		}
+		m.push(roleUser, "$ "+command, "")
+		m.busy = true
+		m.busyStart = time.Now()
+		m.busyLabel = "running local command"
+		m.rerender()
+		return m.shell(command)
+	}
 	m.push(roleUser, text, "")
 	m.busy = true
+	m.busyStart = time.Now()
+	m.busyLabel = "thinking"
 	m.rerender()
 	return m.startRun(text)
 }
@@ -257,13 +296,31 @@ func (m *Model) handleCommand(text string) tea.Cmd {
 				"  /init [force]  scaffold gemcoder in this repo\n"+
 				"  /apply         apply the most recent run's patch\n"+
 				"  /verify        run configured verification commands\n"+
+				"  /shell <cmd>   run a local inspection command (equivalent to !<cmd>)\n"+
 				"  /quit          exit\n"+
-				"Anything else: a coding task sent to Gemini.",
+				"\n"+
+				"Anything you type goes to Gemini as a coding task.\n"+
+				"Prefix with `!` to run a local shell command instead (e.g. `! ls`, `! git status`).",
 			"")
 		m.rerender()
 		return nil
+	case "/shell", "/sh":
+		command := strings.TrimSpace(strings.TrimPrefix(text, cmd))
+		if command == "" {
+			m.push(roleError, "Usage: "+cmd+" <ls|pwd|git status|git branch|git log>", "")
+			m.rerender()
+			return nil
+		}
+		m.busy = true
+		m.busyStart = time.Now()
+		m.busyLabel = "running local command"
+		m.push(roleUser, "$ "+command, "")
+		m.rerender()
+		return m.shell(command)
 	case "/init":
 		m.busy = true
+		m.busyStart = time.Now()
+		m.busyLabel = "initializing"
 		m.push(roleSystem, "Initializing…", "")
 		m.rerender()
 		return m.initRepo()
@@ -274,11 +331,15 @@ func (m *Model) handleCommand(text string) tea.Cmd {
 			return nil
 		}
 		m.busy = true
+		m.busyStart = time.Now()
+		m.busyLabel = "applying"
 		m.push(roleSystem, "Applying patch from "+m.lastRunID+"…", "")
 		m.rerender()
 		return m.apply(m.lastRunID)
 	case "/verify":
 		m.busy = true
+		m.busyStart = time.Now()
+		m.busyLabel = "verifying"
 		m.push(roleSystem, "Running verification…", "")
 		m.rerender()
 		return m.verify()
@@ -287,6 +348,21 @@ func (m *Model) handleCommand(text string) tea.Cmd {
 		m.rerender()
 		return nil
 	}
+}
+
+func renderShellResult(result *rpc.ShellResult) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "$ %s", result.Command)
+	if result.Stdout != "" {
+		fmt.Fprintf(&b, "\n%s", strings.TrimRight(result.Stdout, "\n"))
+	}
+	if result.Stderr != "" {
+		fmt.Fprintf(&b, "\n%s", strings.TrimRight(result.Stderr, "\n"))
+	}
+	if result.ReturnCode != 0 {
+		fmt.Fprintf(&b, "\n(exit %d)", result.ReturnCode)
+	}
+	return b.String()
 }
 
 func (m *Model) push(r role, text, diff string) {
@@ -327,9 +403,14 @@ func (m Model) View() string {
 	body := m.viewport.View()
 	prompt := m.input.View()
 	if m.busy {
-		prompt = m.spinner.View() + " thinking… (press Ctrl+C to cancel)"
+		elapsed := int(time.Since(m.busyStart).Seconds())
+		label := m.busyLabel
+		if label == "" {
+			label = "working"
+		}
+		prompt = fmt.Sprintf("%s %s… %ds  (Ctrl+C to cancel)", m.spinner.View(), label, elapsed)
 	}
-	hint := styles.Hint.Render("/apply  /verify  /init  /help  /quit   ·  pgup/pgdn scroll  ·  drag to select + Cmd/Ctrl-C to copy")
+	hint := styles.Hint.Render("type → Gemini  ·  !<cmd> → local shell  ·  /apply /verify /init /help /quit  ·  pgup/pgdn scroll  ·  drag + Cmd/Ctrl-C copy")
 	return strings.Join([]string{header, body, prompt, hint}, "\n")
 }
 

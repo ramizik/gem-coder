@@ -42,3 +42,22 @@ def test_apply_missing_run(tmp_path: Path) -> None:
     resp = _do(dispatch, "apply")
     assert resp["error"]["code"] == -32603
     assert "No runs" in resp["error"]["message"]
+
+
+def test_shell_runs_safe_command(tmp_path: Path) -> None:
+    (tmp_path / "hello.txt").write_text("hello")
+    dispatch = _build_dispatch(tmp_path)
+
+    resp = _do(dispatch, "shell", command="ls")
+
+    assert resp["result"]["returncode"] == 0
+    assert "hello.txt" in resp["result"]["stdout"]
+
+
+def test_shell_rejects_unsafe_command(tmp_path: Path) -> None:
+    dispatch = _build_dispatch(tmp_path)
+
+    resp = _do(dispatch, "shell", command="cat .env")
+
+    assert resp["error"]["code"] == -32603
+    assert "Only safe local inspection commands" in resp["error"]["message"]

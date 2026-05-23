@@ -14,6 +14,7 @@ Methods:
   start_run(task)                -> {run_id, summary, patch}
   apply(run_id?, dry_run?)       -> {ok, files, stderr, dry_run, run_id}
   verify(run_id?)                -> [{command, returncode, stdout, stderr}, ...]
+  shell(command)                  -> {command, returncode, stdout, stderr}
 
 Errors use JSON-RPC error codes:
   -32600 invalid request
@@ -37,6 +38,7 @@ from gemcoder.config import CONFIG_FILE, load_config
 from gemcoder.events import RunStore
 from gemcoder.harness import HarnessRunner
 from gemcoder.patcher import apply_patch
+from gemcoder.shell import run_shell_command
 from gemcoder.templates import scaffold
 
 
@@ -125,6 +127,10 @@ def _verify(root: Path, run_id: str | None = None) -> list[dict[str, Any]]:
     return [asdict(r) for r in results]
 
 
+def _shell(root: Path, command: str) -> dict[str, object]:
+    return run_shell_command(root, command).asdict()
+
+
 def _info(root: Path) -> dict[str, Any]:
     config = load_config(root)
     return {
@@ -154,6 +160,7 @@ def _build_dispatch(root: Path) -> dict[str, Callable[..., Any]]:
         "start_run": lambda task: _start_run(root, task),
         "apply": lambda run_id=None, dry_run=False: _apply(root, run_id, dry_run),
         "verify": lambda run_id=None: _verify(root, run_id),
+        "shell": lambda command: _shell(root, command),
     }
 
 

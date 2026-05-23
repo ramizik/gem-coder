@@ -124,8 +124,8 @@ type ApplyResult struct {
 	OK     bool     `json:"ok"`
 	Files  []string `json:"files"`
 	Stderr string   `json:"stderr"`
-	DryRun bool    `json:"dry_run"`
-	RunID  string  `json:"run_id"`
+	DryRun bool     `json:"dry_run"`
+	RunID  string   `json:"run_id"`
 }
 
 type Info struct {
@@ -141,6 +141,13 @@ type InitResult struct {
 }
 
 type VerifyResult struct {
+	Command    string `json:"command"`
+	ReturnCode int    `json:"returncode"`
+	Stdout     string `json:"stdout"`
+	Stderr     string `json:"stderr"`
+}
+
+type ShellResult struct {
 	Command    string `json:"command"`
 	ReturnCode int    `json:"returncode"`
 	Stdout     string `json:"stdout"`
@@ -193,4 +200,9 @@ func (c *Client) Apply(runID string, dryRun bool) (*ApplyResult, error) {
 		params["run_id"] = runID
 	}
 	return &out, c.Call("apply", params, &out)
+}
+
+func (c *Client) Shell(command string) (*ShellResult, error) {
+	var out ShellResult
+	return &out, c.Call("shell", map[string]string{"command": command}, &out)
 }

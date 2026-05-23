@@ -11,8 +11,15 @@ from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+import yaml
+
 from gemcoder.config import GemCoderConfig
 from gemcoder.google_sources import build_google_sources
+
+# google_sources.py mounts files at "/workspace/repo/<rel_path>", so the
+# Managed Agent generates diffs against those paths. Strip this prefix
+# before handing the diff to `git apply` locally.
+WORKSPACE_PREFIX = "workspace/repo/"
 
 
 class ManagedAgentError(RuntimeError):
@@ -230,10 +237,67 @@ def _normalize_tools(tools: list[str | dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _extract_unified_diff(text: str) -> str:
+    """Pull a unified diff out of the Managed Agent's text output.
+
+    The return_contract asks for YAML with a `patch:` field, so the model
+    typically wraps the diff in a ```yaml fence. Falls back to ```diff
+    fences and raw `--- a/`/`diff --git` markers.
+    """
+    if not text:
+        return ""
+
+    for fence in ("```yaml", "```yml"):
+        if fence in text:
+            block = text.split(fence, 1)[1].split("```", 1)[0]
+            try:
+                data = yaml.safe_load(block)
+            except yaml.YAMLError:
+                data = None
+            if isinstance(data, dict) and isinstance(data.get("patch"), str):
+                patch = data["patch"].strip()
+                if patch:
+                    return _normalize_workspace_paths(patch) + "\n"
+
     if "```diff" in text:
         after = text.split("```diff", 1)[1]
-        return after.split("```", 1)[0].strip() + "\n"
-    if "\ndiff --git " in text or text.startswith("diff --git "):
-        start = text.find("diff --git ")
-        return text[start:].strip() + "\n"
+        body = after.split("```", 1)[0].strip()
+        if body:
+            return _normalize_workspace_paths(body) + "\n"
+
+    if "diff --git " in text:
+        return _normalize_workspace_paths(text[text.find("diff --git "):].strip()) + "\n"
+    # Raw `--- ` marker — works for both `--- a/X` and `--- workspace/repo/X` forms.
+    for line in text.splitlines():
+        if line.startswith("--- "):
+            idx = text.find(line)
+            return _normalize_workspace_paths(text[idx:].strip()) + "\n"
     return ""
+
+
+def _normalize_workspace_paths(patch: str) -> str:
+    """Force diff headers into local `a/<path>` / `b/<path>` form."""
+    lines: list[str] = []
+    for line in patch.splitlines():
+        if line.startswith("--- ") and not line.startswith("--- /dev/null"):
+            lines.append("--- a/" + _strip_path_prefix(line[4:]))
+        elif line.startswith("+++ ") and not line.startswith("+++ /dev/null"):
+            lines.append("+++ b/" + _strip_path_prefix(line[4:]))
+        elif line.startswith("diff --git "):
+            line = line.replace("a/" + WORKSPACE_PREFIX, "a/").replace(
+                "b/" + WORKSPACE_PREFIX, "b/"
+            )
+            lines.append(line)
+        else:
+            lines.append(line)
+    return "\n".join(lines) + ("\n" if patch.endswith("\n") else "")
+
+
+def _strip_path_prefix(path: str) -> str:
+    path = path.strip()
+    for prefix in ("a/", "b/", "/"):
+        if path.startswith(prefix):
+            path = path[len(prefix):]
+            break
+    if path.startswith(WORKSPACE_PREFIX):
+        path = path[len(WORKSPACE_PREFIX):]
+    return path

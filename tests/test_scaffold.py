@@ -3,7 +3,7 @@ from pathlib import Path
 from gemcoder.config import load_config
 from gemcoder.google_sources import build_google_sources
 from gemcoder.harness import HarnessRunner
-from gemcoder.managed import ManagedAgentClient, _extract_output_text
+from gemcoder.managed import ManagedAgentClient, _extract_output_text, _extract_unified_diff
 from gemcoder.task_packet import build_task_packet
 from gemcoder.templates import scaffold
 
@@ -176,3 +176,20 @@ def test_extract_output_text_reads_managed_agent_model_output() -> None:
     }
 
     assert _extract_output_text(response) == "final summary"
+
+
+def test_extract_unified_diff_normalizes_workspace_paths() -> None:
+    text = """```diff
+diff --git a/workspace/repo/src/app.py b/workspace/repo/src/app.py
+--- a/workspace/repo/src/app.py
++++ b/workspace/repo/src/app.py
+@@ -1 +1 @@
+-old
++new
+```"""
+
+    patch = _extract_unified_diff(text)
+
+    assert "workspace/repo" not in patch
+    assert "diff --git a/src/app.py b/src/app.py" in patch
+    assert "+++ b/src/app.py" in patch
