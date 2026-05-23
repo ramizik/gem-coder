@@ -164,7 +164,7 @@ def run(
         "",
         "--backend",
         "-b",
-        help="local | remote | auto (default = orchestrator.default_backend).",
+        help="local | remote | both | auto (default = orchestrator.default_backend).",
     ),
     stream: bool = typer.Option(
         True,
