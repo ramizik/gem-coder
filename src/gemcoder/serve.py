@@ -37,6 +37,7 @@ from typing import Any
 from gemcoder.config import CONFIG_FILE, load_config
 from gemcoder.events import RunStore
 from gemcoder.harness import HarnessRunner
+from gemcoder.orchestrator import Backend, OrchestratorEvent
 from gemcoder.patcher import apply_patch
 from gemcoder.shell import run_shell_command
 from gemcoder.templates import scaffold
@@ -97,18 +98,42 @@ _SESSION_HISTORY: list[dict[str, str]] = []
 _SESSION_HISTORY_MAX_TURNS = 10  # cap to keep token budget bounded
 
 
-def _start_run(root: Path, task: str) -> dict[str, Any]:
+def _notify(method: str, params: dict[str, Any]) -> None:
+    sys.stdout.write(
+        json.dumps({"jsonrpc": "2.0", "method": method, "params": params}) + "\n"
+    )
+    sys.stdout.flush()
+
+
+def _start_run(root: Path, task: str, backend: str = "") -> dict[str, Any]:
     def on_chunk(delta: str) -> None:
-        sys.stdout.write(
-            json.dumps(
-                {"jsonrpc": "2.0", "method": "run.chunk", "params": {"delta": delta}}
-            )
-            + "\n"
+        _notify("run.chunk", {"delta": delta})
+
+    def on_event(event: OrchestratorEvent) -> None:
+        _notify(
+            "run.event",
+            {
+                "kind": event.kind,
+                "backend": event.backend.value,
+                "text": event.text,
+                "data": event.data,
+            },
         )
-        sys.stdout.flush()
+
+    backend_choice: Backend | None
+    try:
+        backend_choice = Backend.parse(backend) if backend else None
+    except ValueError as exc:
+        raise ValueError(str(exc)) from exc
 
     history = _SESSION_HISTORY[-(_SESSION_HISTORY_MAX_TURNS * 2):] or None
-    result = HarnessRunner(root).run(task, on_chunk=on_chunk, history=history)
+    result = HarnessRunner(root).run(
+        task,
+        on_chunk=on_chunk,
+        history=history,
+        backend=backend_choice,
+        on_event=on_event,
+    )
     _SESSION_HISTORY.append({"role": "user", "content": task})
     _SESSION_HISTORY.append({"role": "assistant", "content": result.summary})
     patch = ""
@@ -116,7 +141,12 @@ def _start_run(root: Path, task: str) -> dict[str, Any]:
         patch_file = root / result.patch_path
         if patch_file.exists():
             patch = patch_file.read_text()
-    return {"run_id": result.run_id, "summary": result.summary, "patch": patch}
+    return {
+        "run_id": result.run_id,
+        "summary": result.summary,
+        "patch": patch,
+        "backend": (result.diagnostics or {}).get("backend"),
+    }
 
 
 def _reset_session() -> dict[str, Any]:
@@ -180,7 +210,7 @@ def _build_dispatch(root: Path) -> dict[str, Callable[..., Any]]:
         "list_runs": lambda: _list_runs(root),
         "get_events": lambda run_id: _get_events(root, run_id),
         "get_run": lambda run_id: _get_run(root, run_id),
-        "start_run": lambda task: _start_run(root, task),
+        "start_run": lambda task, backend="": _start_run(root, task, backend),
         "apply": lambda run_id=None, dry_run=False: _apply(root, run_id, dry_run),
         "verify": lambda run_id=None: _verify(root, run_id),
         "shell": lambda command: _shell(root, command),

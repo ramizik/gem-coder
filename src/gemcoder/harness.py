@@ -12,7 +12,8 @@ import yaml
 from gemcoder.config import GemCoderConfig, load_config
 from gemcoder.events import RunStore
 from gemcoder.google_sources import build_google_sources
-from gemcoder.managed import ManagedAgentClient, ManagedAgentError, ManagedAgentResult
+from gemcoder.managed import ManagedAgentError, ManagedAgentResult
+from gemcoder.orchestrator import Backend, Orchestrator, OrchestratorEvent
 from gemcoder.task_packet import build_task_packet, collect_context_files, load_skills
 from gemcoder.verify import VerificationResult, run_verification
 
@@ -158,7 +159,15 @@ class HarnessRunner:
         manifest["manifest_path"] = str(manifest_path.relative_to(self.root))
         return manifest
 
-    def run(self, task: str, on_chunk=None, history=None) -> HarnessRunResult:
+    def run(
+        self,
+        task: str,
+        on_chunk=None,
+        history=None,
+        *,
+        backend: Backend | str | None = None,
+        on_event=None,
+    ) -> HarnessRunResult:
         # POLICY: every task always goes through the LLM harness. Do NOT add
         # local-shell auto-detection here (e.g. matching `ls`/`pwd`/`git status`).
         # User explicitly wants only the TUI `!` prefix to bypass the harness.
@@ -176,23 +185,46 @@ class HarnessRunner:
         self.store.append(run_id, "task.packet.created")
         self.store.write_artifact(run_id, "task-packet.yaml", packet)
 
-        client = ManagedAgentClient(self.config, self.root)
-        request_endpoint = client.request_endpoint()
-        request_diagnostics = client.request_diagnostics(request_endpoint)
+        orchestrator = Orchestrator(self.config, self.root)
+
+        def record_event(event: OrchestratorEvent) -> None:
+            self.store.append(
+                run_id,
+                f"orchestrator.{event.kind}",
+                {"backend": event.backend.value, **event.data},
+            )
+            if on_event is not None:
+                on_event(event)
+
         self.store.append(
             run_id,
             "managed.interaction.started",
             {"provider": self.config.managed_agent.provider},
         )
-        self.store.append(run_id, "provider.request.started", request_diagnostics)
+        self.store.append(
+            run_id,
+            "provider.request.started",
+            {
+                "provider": self.config.managed_agent.provider,
+                "mode": self.config.managed_agent.mode,
+                "model": self.config.managed_agent.base_agent,
+            },
+        )
         try:
-            managed_result = client.run_task(packet, on_chunk=on_chunk)
+            managed_result, resolved_backend = orchestrator.run(
+                packet,
+                task=task,
+                backend=backend,
+                on_event=record_event,
+                on_chunk=on_chunk,
+            )
         except ManagedAgentError as exc:
             managed_result = ManagedAgentResult(
                 summary=f"Managed Agent request failed: {exc}",
-                request=json.dumps(client.build_request_payload(packet), indent=2) + "\n",
+                request=packet,
                 diagnostics=exc.diagnostics,
             )
+            resolved_backend = Backend.REMOTE
             self.store.append(
                 run_id,
                 "managed.interaction.failed",
@@ -204,7 +236,11 @@ class HarnessRunner:
                 {"error": str(exc), **exc.diagnostics},
             )
         else:
-            self.store.append(run_id, "provider.request.finished", managed_result.diagnostics)
+            self.store.append(
+                run_id,
+                "provider.request.finished",
+                {"backend": resolved_backend.value, **(managed_result.diagnostics or {})},
+            )
         self._store_managed_result(run_id, managed_result)
 
         patch_path: str | None = None
@@ -215,12 +251,14 @@ class HarnessRunner:
         else:
             self.store.append(run_id, "patch.empty")
 
-        self._store_run_summary(run_id, managed_result, patch_path)
+        self._store_run_summary(run_id, managed_result, patch_path, resolved_backend)
+        diagnostics = dict(managed_result.diagnostics or {})
+        diagnostics["backend"] = resolved_backend.value
         return HarnessRunResult(
             run_id=run_id,
             summary=managed_result.summary,
             patch_path=patch_path,
-            diagnostics=managed_result.diagnostics,
+            diagnostics=diagnostics,
         )
 
     def _maybe_answer_from_verification(
@@ -298,12 +336,17 @@ class HarnessRunner:
         )
 
     def _store_run_summary(
-        self, run_id: str, result: ManagedAgentResult, patch_path: str | None
+        self,
+        run_id: str,
+        result: ManagedAgentResult,
+        patch_path: str | None,
+        backend: Backend | None = None,
     ) -> None:
         diagnostics = result.diagnostics
         summary = {
             "run_id": run_id,
             "status": diagnostics.get("status", "completed"),
+            "backend": backend.value if backend is not None else None,
             "provider": diagnostics.get("provider", self.config.managed_agent.provider),
             "mode": diagnostics.get("mode", self.config.managed_agent.mode),
             "model": diagnostics.get("model", self.config.managed_agent.base_agent),

@@ -16,6 +16,7 @@ from gemcoder.config import CONFIG_FILE, load_config
 from gemcoder.events import RunStore
 from gemcoder.harness import HarnessRunner
 from gemcoder.managed import ManagedAgentClient
+from gemcoder.orchestrator import Backend, OrchestratorEvent
 from gemcoder.patcher import apply_patch
 from gemcoder.templates import scaffold
 
@@ -159,19 +160,63 @@ def agent_create() -> None:
 def run(
     task: str = typer.Argument(..., help="Coding task to run."),
     json_output: bool = typer.Option(False, "--json", help="Output JSON."),
+    backend: str = typer.Option(
+        "",
+        "--backend",
+        "-b",
+        help="local | remote | auto (default = orchestrator.default_backend).",
+    ),
+    stream: bool = typer.Option(
+        True,
+        "--stream/--no-stream",
+        help="Print token deltas to stdout as they arrive.",
+    ),
 ) -> None:
     """Run a coding task through GemCoder."""
     root = Path.cwd()
     config = load_config(root)
+    backend_choice: Backend | None
+    try:
+        backend_choice = Backend.parse(backend) if backend else None
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    resolved = backend_choice or Backend.parse(config.orchestrator.default_backend)
     if not json_output:
         console.print(
             "[dim]Provider: "
             f"{config.managed_agent.provider} "
             f"mode={config.managed_agent.mode} "
             f"model={config.managed_agent.base_agent} "
+            f"backend={resolved.value} "
             f"auth={'present' if os.getenv('GEMINI_API_KEY') else 'missing'}[/dim]"
         )
-    result = HarnessRunner(root, config).run(task)
+
+    def on_chunk(delta: str) -> None:
+        if stream and not json_output:
+            typer.echo(delta, nl=False)
+
+    def on_event(event: OrchestratorEvent) -> None:
+        if json_output or not stream:
+            return
+        if event.kind == "backend.selected":
+            console.print(f"[dim]→ backend: {event.backend.value}[/dim]")
+        elif event.kind == "tool_call":
+            name = event.data.get("name", "tool")
+            console.print(f"[cyan]· tool {name}[/cyan]")
+        elif event.kind == "thought":
+            # thoughts can be noisy; only show first line
+            line = (event.text or "").splitlines()[0] if event.text else ""
+            if line:
+                console.print(f"[magenta]· {line}[/magenta]")
+        elif event.kind == "error":
+            console.print(f"[red]error: {event.text}[/red]")
+
+    result = HarnessRunner(root, config).run(
+        task, on_chunk=on_chunk, backend=backend_choice, on_event=on_event
+    )
+    if stream and not json_output:
+        typer.echo("")
     diagnostics = result.diagnostics or {}
     artifacts_dir = f".gemcoder/runs/{result.run_id}"
     if json_output:
@@ -195,7 +240,10 @@ def run(
         )
     else:
         elapsed = diagnostics.get("elapsed_seconds")
-        subtitle = f" ({elapsed}s)" if elapsed is not None else ""
+        backend_value = diagnostics.get("backend", "?")
+        subtitle = f" · {backend_value}"
+        if elapsed is not None:
+            subtitle += f" · {elapsed}s"
         console.print(Panel(result.summary, title=f"Run {result.run_id}{subtitle}"))
     console.print(f"Artifacts: {artifacts_dir}")
 

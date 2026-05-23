@@ -28,6 +28,9 @@ dev = [
 tui = [
   "textual>=0.86",
 ]
+local = [
+  "google-antigravity>=0.1",
+]
 
 [project.scripts]
 gemcoder = "gemcoder.cli.main:app"

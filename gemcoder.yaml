@@ -64,3 +64,9 @@ optimization:
   - tests_pass
   - minimal_diff
   - low_latency
+orchestrator:
+  default_backend: auto       # local | remote | auto
+  max_files_local: 20
+  max_bytes_local: 200000
+  max_task_chars_local: 4000
+  local_capabilities: read_only  # read_only | write

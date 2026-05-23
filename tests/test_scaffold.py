@@ -379,7 +379,7 @@ def test_harness_records_provider_events_and_run_summary(tmp_path: Path, monkeyp
 
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     monkeypatch.setattr(
-        "gemcoder.harness.ManagedAgentClient",
+        "gemcoder.orchestrator.ManagedAgentClient",
         lambda config, root: ManagedAgentClient(
             config,
             root,

@@ -88,6 +88,16 @@ class OptimizationConfig(BaseModel):
     )
 
 
+class OrchestratorConfig(BaseModel):
+    """Routing policy between the local Antigravity SDK and remote Managed Agents."""
+
+    default_backend: str = "auto"  # local | remote | auto
+    max_files_local: int = 20
+    max_bytes_local: int = 200_000
+    max_task_chars_local: int = 4_000
+    local_capabilities: str = "read_only"  # "read_only" | "write"
+
+
 class GemCoderConfig(BaseModel):
     project: ProjectConfig = Field(default_factory=ProjectConfig)
     managed_agent: ManagedAgentConfig = Field(default_factory=ManagedAgentConfig)
@@ -96,6 +106,7 @@ class GemCoderConfig(BaseModel):
     verification: VerificationConfig = Field(default_factory=VerificationConfig)
     approvals: ApprovalConfig = Field(default_factory=ApprovalConfig)
     optimization: OptimizationConfig = Field(default_factory=OptimizationConfig)
+    orchestrator: OrchestratorConfig = Field(default_factory=OrchestratorConfig)
 
 
 def load_config(root: str | Path = ".") -> GemCoderConfig:
