@@ -58,11 +58,7 @@ def _doctor(root: Path) -> dict[str, Any]:
             "ok": (root / config.harness.skills_dir).exists(),
             "detail": config.harness.skills_dir,
         },
-        {
-            "name": "gemini_api_key",
-            "ok": bool(os.getenv("GEMINI_API_KEY")),
-            "detail": "GEMINI_API_KEY env",
-        },
+        _auth_check(config),
         {
             "name": "verification",
             "ok": bool(config.verification.commands),
@@ -70,6 +66,19 @@ def _doctor(root: Path) -> dict[str, Any]:
         },
     ]
     return {"checks": checks}
+
+
+def _auth_check(config) -> dict[str, Any]:
+    env_name = (
+        config.managed_agent.access_token_env
+        if config.managed_agent.auth_type == "bearer"
+        else config.managed_agent.api_key_env
+    )
+    return {
+        "name": "provider_auth",
+        "ok": bool(os.getenv(env_name)),
+        "detail": f"{env_name} env",
+    }
 
 
 def _list_runs(root: Path) -> list[str]:

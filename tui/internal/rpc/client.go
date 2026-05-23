@@ -147,8 +147,10 @@ type Event struct {
 
 type RunDetail struct {
 	Record  map[string]any `json:"record"`
+	RunID   string         `json:"run_id"`
 	Summary string         `json:"summary"`
 	Patch   string         `json:"patch"`
+	Backend string         `json:"backend"`
 }
 
 type ApplyResult struct {

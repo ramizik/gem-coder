@@ -21,7 +21,7 @@ def test_doctor_runs(tmp_path: Path) -> None:
     resp = _do(dispatch, "doctor")
     assert "result" in resp
     names = {c["name"] for c in resp["result"]["checks"]}
-    assert {"config", "instructions", "skills", "gemini_api_key", "verification"} <= names
+    assert {"config", "instructions", "skills", "provider_auth", "verification"} <= names
 
 
 def test_list_runs_empty(tmp_path: Path) -> None:

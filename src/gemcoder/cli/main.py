@@ -182,6 +182,11 @@ def run(
         raise typer.BadParameter(str(exc)) from exc
 
     resolved = backend_choice or Backend.parse(config.orchestrator.default_backend)
+    auth_env = (
+        config.managed_agent.access_token_env
+        if config.managed_agent.auth_type == "bearer"
+        else config.managed_agent.api_key_env
+    )
     if not json_output:
         console.print(
             "[dim]Provider: "
@@ -189,7 +194,7 @@ def run(
             f"mode={config.managed_agent.mode} "
             f"model={config.managed_agent.base_agent} "
             f"backend={resolved.value} "
-            f"auth={'present' if os.getenv('GEMINI_API_KEY') else 'missing'}[/dim]"
+            f"auth={'present' if os.getenv(auth_env) else 'missing'}[/dim]"
         )
 
     def on_chunk(delta: str) -> None:
@@ -212,8 +217,9 @@ def run(
         elif event.kind == "error":
             console.print(f"[red]error: {event.text}[/red]")
 
+    chunk_callback = on_chunk if stream and not json_output else None
     result = HarnessRunner(root, config).run(
-        task, on_chunk=on_chunk, backend=backend_choice, on_event=on_event
+        task, on_chunk=chunk_callback, backend=backend_choice, on_event=on_event
     )
     if stream and not json_output:
         typer.echo("")

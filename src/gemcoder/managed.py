@@ -131,9 +131,10 @@ class ManagedAgentClient:
         self, body: dict[str, Any], on_chunk: ChunkCallback
     ) -> tuple[str, str]:
         """Stream generateContent via SSE and invoke on_chunk for each text delta."""
+        endpoint = f"models/{self._model_name()}:streamGenerateContent"
         url = (
             f"{self.config.managed_agent.api_base.rstrip('/')}"
-            f"/models/{self._model_name()}:streamGenerateContent?alt=sse"
+            f"/{endpoint}?alt=sse"
         )
         headers = {
             "Content-Type": "application/json",
@@ -143,6 +144,8 @@ class ManagedAgentClient:
         request = Request(
             url=url, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST"
         )
+        started = perf_counter()
+        diagnostics = self.request_diagnostics(endpoint)
         full_text: list[str] = []
         raw_lines: list[str] = []
         try:
@@ -169,11 +172,37 @@ class ManagedAgentClient:
                         on_chunk(delta)
         except HTTPError as exc:
             details = exc.read().decode("utf-8", errors="replace")
+            diagnostics.update(
+                {
+                    "status": "failed",
+                    "elapsed_seconds": round(perf_counter() - started, 3),
+                    "http_status": exc.code,
+                    "error_type": "http",
+                }
+            )
             raise ManagedAgentError(
-                f"streamGenerateContent returned {exc.code}: {details}"
+                f"streamGenerateContent returned {exc.code}: {details}",
+                diagnostics,
             ) from exc
         except (URLError, TimeoutError) as exc:
-            raise ManagedAgentError(f"streamGenerateContent failed: {exc}") from exc
+            error_type = "timeout"
+            if isinstance(exc, URLError) and not isinstance(exc.reason, TimeoutError):
+                error_type = "network"
+            diagnostics.update(
+                {
+                    "status": "failed",
+                    "elapsed_seconds": round(perf_counter() - started, 3),
+                    "error_type": error_type,
+                }
+            )
+            raise ManagedAgentError(
+                f"streamGenerateContent failed: {exc}",
+                diagnostics,
+            ) from exc
+        diagnostics.update(
+            {"status": "success", "elapsed_seconds": round(perf_counter() - started, 3)}
+        )
+        self.last_diagnostics = diagnostics
         return "".join(full_text), "\n".join(raw_lines) + "\n"
 
     def build_request_payload(self, task_packet: str) -> dict[str, Any]:

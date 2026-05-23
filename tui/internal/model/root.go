@@ -226,7 +226,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.push(roleError, msg.err.Error(), "")
 		} else {
-			recID, _ := msg.detail.Record["run_id"].(string)
+			recID := msg.detail.RunID
+			if recID == "" && msg.detail.Record != nil {
+				recID, _ = msg.detail.Record["run_id"].(string)
+			}
 			m.lastRunID = recID
 			idx := m.lastStreamingAgentIdx()
 			if idx >= 0 {
@@ -376,9 +379,9 @@ func (m *Model) handleCommand(text string) tea.Cmd {
 		}
 		switch parts[1] {
 		case "local":
-			m.currentBackend = "antigravity_local"
+			m.currentBackend = "local"
 		case "remote":
-			m.currentBackend = "managed_agent"
+			m.currentBackend = "remote"
 		case "auto":
 			m.currentBackend = ""
 		default:

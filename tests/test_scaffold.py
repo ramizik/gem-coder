@@ -312,6 +312,72 @@ def test_generate_content_mode_uses_model_endpoint(tmp_path: Path) -> None:
     assert "systemInstruction" in calls[0]["payload"]
 
 
+def test_stream_generate_content_records_success_diagnostics(
+    tmp_path: Path, monkeypatch
+) -> None:
+    scaffold(tmp_path)
+    config = load_config(tmp_path)
+    config.managed_agent.mode = "generate_content"
+
+    class FakeStream:
+        def __enter__(self):
+            return iter(
+                [
+                    b'data: {"candidates":[{"content":{"parts":[{"text":"hi"}]}}]}\n',
+                ]
+            )
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+    def fake_urlopen(request, timeout):
+        return FakeStream()
+
+    monkeypatch.setattr("gemcoder.managed.urlopen", fake_urlopen)
+    client = ManagedAgentClient(config, tmp_path, api_key="test-key")
+    chunks: list[str] = []
+
+    result = client.run_task("goal: Say hi", on_chunk=chunks.append)
+
+    assert result.summary == "hi"
+    assert chunks == ["hi"]
+    assert result.diagnostics["status"] == "success"
+    assert result.diagnostics["endpoint"] == "models/gemini-flash-latest:streamGenerateContent"
+
+
+def test_stream_generate_content_records_failure_diagnostics(
+    tmp_path: Path, monkeypatch
+) -> None:
+    scaffold(tmp_path)
+    config = load_config(tmp_path)
+    config.managed_agent.mode = "generate_content"
+
+    class FakeResponse(BytesIO):
+        def close(self):
+            pass
+
+    def fake_urlopen(request, timeout):
+        raise HTTPError(
+            request.full_url,
+            401,
+            "Unauthorized",
+            hdrs=None,
+            fp=FakeResponse(b'{"error":"bad key"}'),
+        )
+
+    monkeypatch.setattr("gemcoder.managed.urlopen", fake_urlopen)
+    client = ManagedAgentClient(config, tmp_path, api_key="test-key")
+
+    try:
+        client.run_task("goal: Say hi", on_chunk=lambda _chunk: None)
+    except ManagedAgentError as exc:
+        assert exc.diagnostics["status"] == "failed"
+        assert exc.diagnostics["http_status"] == 401
+        assert exc.diagnostics["error_type"] == "http"
+    else:
+        raise AssertionError("expected ManagedAgentError")
+
+
 def test_transport_normalizes_socket_timeout(monkeypatch) -> None:
     def fake_urlopen(request, timeout):
         raise TimeoutError("timed out")
