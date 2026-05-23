@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -78,7 +79,11 @@ class ManagedAgentClient:
         return str(response.get("id") or response.get("name") or body["id"])
 
     def run_task(
-        self, task_packet: str, on_chunk: ChunkCallback | None = None
+        self,
+        task_packet: str,
+        on_chunk: ChunkCallback | None = None,
+        *,
+        cancel_event: threading.Event | None = None,
     ) -> ManagedAgentResult:
         if not self.api_key:
             return ManagedAgentResult(
@@ -91,7 +96,9 @@ class ManagedAgentClient:
             )
 
         if self.config.managed_agent.mode in {"generate_content", "generate-content", "direct"}:
-            return self._run_generate_content(task_packet, on_chunk=on_chunk)
+            return self._run_generate_content(
+                task_packet, on_chunk=on_chunk, cancel_event=cancel_event
+            )
 
         body = self.build_interaction_payload(task_packet)
         response = self._post("interactions", body)
@@ -105,11 +112,17 @@ class ManagedAgentClient:
         )
 
     def _run_generate_content(
-        self, task_packet: str, on_chunk: ChunkCallback | None = None
+        self,
+        task_packet: str,
+        on_chunk: ChunkCallback | None = None,
+        *,
+        cancel_event: threading.Event | None = None,
     ) -> ManagedAgentResult:
         body = self.build_generate_content_payload(task_packet)
         if on_chunk is not None:
-            output_text, raw_chunks = self._stream_generate_content(body, on_chunk)
+            output_text, raw_chunks = self._stream_generate_content(
+                body, on_chunk, cancel_event=cancel_event
+            )
             return ManagedAgentResult(
                 summary=output_text or "Gemini returned no output text.",
                 patch=_extract_unified_diff(output_text),
@@ -128,7 +141,11 @@ class ManagedAgentClient:
         )
 
     def _stream_generate_content(
-        self, body: dict[str, Any], on_chunk: ChunkCallback
+        self,
+        body: dict[str, Any],
+        on_chunk: ChunkCallback,
+        *,
+        cancel_event: threading.Event | None = None,
     ) -> tuple[str, str]:
         """Stream generateContent via SSE and invoke on_chunk for each text delta."""
         endpoint = f"models/{self._model_name()}:streamGenerateContent"
@@ -148,11 +165,72 @@ class ManagedAgentClient:
         diagnostics = self.request_diagnostics(endpoint)
         full_text: list[str] = []
         raw_lines: list[str] = []
+        # Pre-check: if cancel was requested before we even started, bail.
+        if cancel_event is not None and cancel_event.is_set():
+            diagnostics.update(
+                {
+                    "status": "cancelled",
+                    "elapsed_seconds": round(perf_counter() - started, 3),
+                    "error_type": "cancelled",
+                }
+            )
+            raise ManagedAgentError("cancelled by user", diagnostics)
+        # Holder so the watcher thread can reach the live response object.
+        response_holder: dict[str, Any] = {"response": None, "done": threading.Event()}
+
+        def cancel_watcher() -> None:
+            if cancel_event is None:
+                return
+            # Block until cancel fires or the request finishes naturally.
+            while not response_holder["done"].is_set():
+                if cancel_event.wait(timeout=0.1):
+                    resp = response_holder["response"]
+                    if resp is not None:
+                        # Closing the underlying socket unblocks the read
+                        # loop with an OSError, which our handler converts
+                        # into a clean ManagedAgentError("cancelled by user").
+                        try:
+                            # Hard-shutdown the underlying socket so any
+                            # pending recv() returns immediately.
+                            sock = getattr(getattr(resp, "fp", None), "raw", None)
+                            if sock is None:
+                                sock = getattr(resp, "fp", None)
+                            try:
+                                import socket as _socket  # noqa: PLC0415
+
+                                if sock is not None and hasattr(sock, "_sock"):
+                                    sock._sock.shutdown(_socket.SHUT_RDWR)
+                            except Exception:  # noqa: BLE001
+                                pass
+                            resp.close()
+                        except Exception:  # noqa: BLE001
+                            pass
+                    return
+
+        watcher: threading.Thread | None = None
+        if cancel_event is not None:
+            watcher = threading.Thread(target=cancel_watcher, daemon=True)
+            watcher.start()
+
         try:
             with urlopen(  # noqa: S310
                 request, timeout=self.config.managed_agent.timeout_seconds
             ) as response:
+                response_holder["response"] = response
                 for line_bytes in response:
+                    if cancel_event is not None and cancel_event.is_set():
+                        try:
+                            response.close()
+                        except Exception:  # noqa: BLE001
+                            pass
+                        diagnostics.update(
+                            {
+                                "status": "cancelled",
+                                "elapsed_seconds": round(perf_counter() - started, 3),
+                                "error_type": "cancelled",
+                            }
+                        )
+                        raise ManagedAgentError("cancelled by user", diagnostics)
                     line = line_bytes.decode("utf-8", errors="replace").rstrip("\n")
                     if not line:
                         continue
@@ -184,9 +262,28 @@ class ManagedAgentClient:
                 f"streamGenerateContent returned {exc.code}: {details}",
                 diagnostics,
             ) from exc
-        except (URLError, TimeoutError) as exc:
-            error_type = "timeout"
-            if isinstance(exc, URLError) and not isinstance(exc.reason, TimeoutError):
+        except (URLError, TimeoutError, OSError) as exc:
+            # If cancel fired, the watcher thread closed the underlying
+            # socket — that surfaces as an OSError / URLError here. Convert
+            # any error raised after cancellation into a clean cancel.
+            if cancel_event is not None and cancel_event.is_set():
+                diagnostics.update(
+                    {
+                        "status": "cancelled",
+                        "elapsed_seconds": round(perf_counter() - started, 3),
+                        "error_type": "cancelled",
+                    }
+                )
+                raise ManagedAgentError("cancelled by user", diagnostics) from exc
+            if isinstance(exc, TimeoutError):
+                error_type = "timeout"
+            elif isinstance(exc, URLError):
+                error_type = (
+                    "timeout"
+                    if isinstance(exc.reason, TimeoutError)
+                    else "network"
+                )
+            else:
                 error_type = "network"
             diagnostics.update(
                 {
@@ -199,6 +296,9 @@ class ManagedAgentClient:
                 f"streamGenerateContent failed: {exc}",
                 diagnostics,
             ) from exc
+        finally:
+            # Always wake the watcher so it can exit promptly.
+            response_holder["done"].set()
         diagnostics.update(
             {"status": "success", "elapsed_seconds": round(perf_counter() - started, 3)}
         )

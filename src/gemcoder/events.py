@@ -58,10 +58,42 @@ class RunStore:
         path.write_text(content)
         return path
 
-    def list_runs(self) -> list[str]:
+    def list_run_summaries(self) -> list[dict[str, Any]]:
         if not self.runs_dir.exists():
             return []
-        return sorted(path.name for path in self.runs_dir.iterdir() if path.is_dir())
+        summaries: list[dict[str, Any]] = []
+        for run_dir in self.runs_dir.iterdir():
+            if not run_dir.is_dir():
+                continue
+            record_path = run_dir / "record.json"
+            if not record_path.exists():
+                continue
+            record = json.loads(record_path.read_text())
+            run_summary: dict[str, Any] = {}
+            summary_path = run_dir / "run-summary.json"
+            if summary_path.exists():
+                run_summary = json.loads(summary_path.read_text())
+            task = str(record.get("task", ""))
+            summaries.append(
+                {
+                    "run_id": run_dir.name,
+                    "created_at": record.get("created_at", ""),
+                    "status": run_summary.get("status") or record.get("status", "unknown"),
+                    "backend": run_summary.get("backend"),
+                    "patch_present": bool(run_summary.get("patch_present"))
+                    or (run_dir / "patch.diff").exists(),
+                    "task": task[:80],
+                }
+            )
+        summaries.sort(key=lambda item: item.get("created_at", ""), reverse=True)
+        return summaries
+
+    def latest_run_id(self) -> str | None:
+        summaries = self.list_run_summaries()
+        return summaries[0]["run_id"] if summaries else None
+
+    def list_runs(self) -> list[str]:
+        return [summary["run_id"] for summary in self.list_run_summaries()]
 
     def read_events(self, run_id: str) -> list[RunEvent]:
         path = self.runs_dir / run_id / "events.jsonl"

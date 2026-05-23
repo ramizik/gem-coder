@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"sync"
 	"sync/atomic"
+	"syscall"
 )
 
 type request struct {
@@ -68,6 +69,17 @@ func Start(cmd *exec.Cmd) (*Client, error) {
 func (c *Client) Close() error {
 	_ = c.stdin.Close()
 	return c.cmd.Wait()
+}
+
+// Interrupt sends SIGINT to the server subprocess. The server's run loop
+// catches it and returns a cancellation response on the in-flight call.
+// Safe to call from any goroutine; it does not take the call mutex so it
+// can interrupt an in-flight Call.
+func (c *Client) Interrupt() error {
+	if c.cmd == nil || c.cmd.Process == nil {
+		return nil
+	}
+	return c.cmd.Process.Signal(syscall.SIGINT)
 }
 
 // NotificationHandler is invoked for server-pushed notifications encountered
@@ -145,12 +157,24 @@ type Event struct {
 	Timestamp string         `json:"timestamp"`
 }
 
+type RunSummary struct {
+	RunID        string `json:"run_id"`
+	CreatedAt    string `json:"created_at"`
+	Status       string `json:"status"`
+	Backend      string `json:"backend"`
+	PatchPresent bool   `json:"patch_present"`
+	Task         string `json:"task"`
+}
+
 type RunDetail struct {
-	Record  map[string]any `json:"record"`
-	RunID   string         `json:"run_id"`
-	Summary string         `json:"summary"`
-	Patch   string         `json:"patch"`
-	Backend string         `json:"backend"`
+	Record      map[string]any `json:"record"`
+	RunID       string         `json:"run_id"`
+	Summary     string         `json:"summary"`
+	Patch       string         `json:"patch"`
+	Backend     string         `json:"backend"`
+	Status      string         `json:"status"`
+	Diagnostics map[string]any `json:"diagnostics"`
+	Cancelled   bool           `json:"cancelled"`
 }
 
 type ApplyResult struct {
@@ -187,6 +211,15 @@ type ShellResult struct {
 	Stderr     string `json:"stderr"`
 }
 
+type SmokeResult struct {
+	Backend        string  `json:"backend"`
+	Status         string  `json:"status"`
+	ElapsedSeconds float64 `json:"elapsed_seconds"`
+	Model          string  `json:"model"`
+	Preview        string  `json:"preview"`
+	Error          string  `json:"error"`
+}
+
 func (c *Client) Info() (*Info, error) {
 	var out Info
 	return &out, c.Call("info", nil, &out)
@@ -210,8 +243,8 @@ func (c *Client) ResetSession() error {
 	return c.Call("reset_session", nil, nil)
 }
 
-func (c *Client) ListRuns() ([]string, error) {
-	var out []string
+func (c *Client) ListRuns() ([]RunSummary, error) {
+	var out []RunSummary
 	return out, c.Call("list_runs", nil, &out)
 }
 
@@ -234,6 +267,16 @@ func (c *Client) StartRun(task, backend string) (*RunDetail, error) {
 	return &out, c.Call("start_run", params, &out)
 }
 
+// Cancel asks the server to cancel an in-flight run. Errors are non-fatal —
+// the UI may swallow them and reset its busy state regardless.
+func (c *Client) Cancel(runID string) error {
+	params := map[string]string{}
+	if runID != "" {
+		params["run_id"] = runID
+	}
+	return c.Call("cancel_run", params, nil)
+}
+
 func (c *Client) Apply(runID string, dryRun bool) (*ApplyResult, error) {
 	var out ApplyResult
 	params := map[string]any{"dry_run": dryRun}
@@ -246,4 +289,14 @@ func (c *Client) Apply(runID string, dryRun bool) (*ApplyResult, error) {
 func (c *Client) Shell(command string) (*ShellResult, error) {
 	var out ShellResult
 	return &out, c.Call("shell", map[string]string{"command": command}, &out)
+}
+
+func (c *Client) Smoke(prompt, backend string, timeout int) ([]SmokeResult, error) {
+	var out []SmokeResult
+	params := map[string]any{
+		"prompt":  prompt,
+		"backend": backend,
+		"timeout": timeout,
+	}
+	return out, c.Call("smoke", params, &out)
 }

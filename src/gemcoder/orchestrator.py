@@ -8,6 +8,7 @@ or the TUI — can render progress live.
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -144,6 +145,7 @@ class Orchestrator:
         backend: Backend | str | None = None,
         on_event: EventCallback | None = None,
         on_chunk: Callable[[str], None] | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> tuple[ManagedAgentResult, Backend]:
         """Run a task packet on the resolved backend.
 
@@ -174,12 +176,29 @@ class Orchestrator:
                 task_packet,
                 task=task,
                 on_event=on_event,
+                cancel_event=cancel_event,
                 _already_emitted_selected=True,
             )
             return parallel.primary, parallel.winner
         if resolved is Backend.LOCAL:
-            return self._run_local(task_packet, emit, on_chunk), resolved
-        return self._run_remote(task_packet, emit, on_chunk), resolved
+            return (
+                self._run_local(task_packet, emit, on_chunk, cancel_event=cancel_event),
+                resolved,
+            )
+        return (
+            self._run_remote(task_packet, emit, on_chunk, cancel_event=cancel_event),
+            resolved,
+        )
+
+    def dispatch(
+        self,
+        task_packet: str,
+        on_chunk: Callable[[str], None] | None = None,
+        *,
+        cancel_event: threading.Event | None = None,
+    ) -> tuple[ManagedAgentResult, Backend]:
+        """Thin wrapper over `run` matching the cancellation-spec signature."""
+        return self.run(task_packet, on_chunk=on_chunk, cancel_event=cancel_event)
 
     def run_both(
         self,
@@ -187,6 +206,7 @@ class Orchestrator:
         task: str = "",
         *,
         on_event: EventCallback | None = None,
+        cancel_event: threading.Event | None = None,
         _already_emitted_selected: bool = False,
     ) -> ParallelResult:
         """Fan the same task out to BOTH backends concurrently.
@@ -198,6 +218,23 @@ class Orchestrator:
         thread pool is safe (LocalAgentClient owns its own asyncio loop).
         """
         lock = Lock()
+        # Per-call combined event: trips when EITHER the caller's external
+        # cancel fires OR the first backend finishes (so the loser bails).
+        combined_cancel = threading.Event()
+
+        def watch_external() -> None:
+            if cancel_event is None:
+                return
+            cancel_event.wait()
+            combined_cancel.set()
+
+        watcher = (
+            threading.Thread(target=watch_external, daemon=True)
+            if cancel_event is not None
+            else None
+        )
+        if watcher is not None:
+            watcher.start()
 
         def emit(event: OrchestratorEvent) -> None:
             if on_event is None:
@@ -220,9 +257,16 @@ class Orchestrator:
             # interleaved deltas would be unreadable. Tokens still flow
             # into the event stream tagged with backend.
             if backend is Backend.LOCAL:
-                result = self._run_local(task_packet, emit, on_chunk=None)
+                result = self._run_local(
+                    task_packet, emit, on_chunk=None, cancel_event=combined_cancel
+                )
             else:
-                result = self._run_remote(task_packet, emit, on_chunk=None)
+                result = self._run_remote(
+                    task_packet, emit, on_chunk=None, cancel_event=combined_cancel
+                )
+            # First winner: signal the loser to bail out as soon as possible.
+            if not combined_cancel.is_set():
+                combined_cancel.set()
             return backend, result, round(perf_counter() - started, 3)
 
         ordered: list[tuple[Backend, ManagedAgentResult, float]] = []
@@ -286,6 +330,8 @@ class Orchestrator:
         task_packet: str,
         emit: Callable[[OrchestratorEvent], None],
         on_chunk: Callable[[str], None] | None,
+        *,
+        cancel_event: threading.Event | None = None,
     ) -> ManagedAgentResult:
         client = LocalAgentClient(self.config, self.root)
 
@@ -295,7 +341,9 @@ class Orchestrator:
                 on_chunk(text)
             emit(OrchestratorEvent(kind=kind, backend=Backend.LOCAL, text=text, data=data))
 
-        result = client.run_task(task_packet, on_event=local_event)
+        result = client.run_task(
+            task_packet, on_event=local_event, cancel_event=cancel_event
+        )
         emit(
             OrchestratorEvent(
                 kind="diagnostic",
@@ -318,6 +366,8 @@ class Orchestrator:
         task_packet: str,
         emit: Callable[[OrchestratorEvent], None],
         on_chunk: Callable[[str], None] | None,
+        *,
+        cancel_event: threading.Event | None = None,
     ) -> ManagedAgentResult:
         client = ManagedAgentClient(self.config, self.root)
 
@@ -337,7 +387,9 @@ class Orchestrator:
         # This keeps the non-stream `transport=...` injection point usable.
         chunk_handler = remote_chunk if on_chunk is not None else None
         try:
-            result = client.run_task(task_packet, on_chunk=chunk_handler)
+            result = client.run_task(
+                task_packet, on_chunk=chunk_handler, cancel_event=cancel_event
+            )
         except ManagedAgentError as exc:
             emit(
                 OrchestratorEvent(

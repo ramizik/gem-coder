@@ -90,6 +90,8 @@ def test_orchestrator_emits_events_in_order(tmp_path: Path, monkeypatch) -> None
             self,
             packet: str,
             on_chunk=None,
+            cancel_event=None,
+            **kwargs: Any,
         ) -> ManagedAgentResult:
             for delta in ("hello ", "world"):
                 if on_chunk is not None:
@@ -132,7 +134,13 @@ def test_orchestrator_remote_error_emits_error_event(tmp_path: Path, monkeypatch
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             pass
 
-        def run_task(self, packet: str, on_chunk=None) -> ManagedAgentResult:
+        def run_task(
+            self,
+            packet: str,
+            on_chunk=None,
+            cancel_event=None,
+            **kwargs: Any,
+        ) -> ManagedAgentResult:
             raise ManagedAgentError("simulated 503", {"http_status": 503})
 
     monkeypatch.setattr("gemcoder.orchestrator.ManagedAgentClient", FailingClient)
@@ -157,7 +165,13 @@ def _make_fake_clients(local_summary: str, remote_summary: str, fail: str | None
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             pass
 
-        def run_task(self, packet: str, on_event=None) -> ManagedAgentResult:
+        def run_task(
+            self,
+            packet: str,
+            on_event=None,
+            cancel_event=None,
+            **kwargs: Any,
+        ) -> ManagedAgentResult:
             if on_event is not None:
                 on_event("token", {"text": local_summary})
             status = "failed" if fail == "local" else "success"
@@ -173,7 +187,13 @@ def _make_fake_clients(local_summary: str, remote_summary: str, fail: str | None
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             pass
 
-        def run_task(self, packet: str, on_chunk=None) -> ManagedAgentResult:
+        def run_task(
+            self,
+            packet: str,
+            on_chunk=None,
+            cancel_event=None,
+            **kwargs: Any,
+        ) -> ManagedAgentResult:
             status = "failed" if fail == "remote" else "success"
             return ManagedAgentResult(
                 summary=remote_summary,

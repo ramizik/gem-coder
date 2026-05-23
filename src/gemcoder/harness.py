@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -167,6 +168,7 @@ class HarnessRunner:
         *,
         backend: Backend | str | None = None,
         on_event=None,
+        cancel_event: threading.Event | None = None,
     ) -> HarnessRunResult:
         # POLICY: every task always goes through the LLM harness. Do NOT add
         # local-shell auto-detection here (e.g. matching `ls`/`pwd`/`git status`).
@@ -218,7 +220,7 @@ class HarnessRunner:
 
         if resolved_request is Backend.BOTH:
             parallel = orchestrator.run_both(
-                packet, task=task, on_event=record_event
+                packet, task=task, on_event=record_event, cancel_event=cancel_event
             )
             managed_result = parallel.primary
             resolved_backend = parallel.winner
@@ -240,8 +242,12 @@ class HarnessRunner:
                     backend=resolved_request,
                     on_event=record_event,
                     on_chunk=on_chunk,
+                    cancel_event=cancel_event,
                 )
             except ManagedAgentError as exc:
+                if str(exc) == "cancelled by user":
+                    # Let serve.py turn this into a clean cancelled response.
+                    raise
                 managed_result = ManagedAgentResult(
                     summary=f"Managed Agent request failed: {exc}",
                     request=packet,
@@ -343,8 +349,7 @@ class HarnessRunner:
         return results
 
     def latest_run_id(self) -> str | None:
-        runs = self.store.list_runs()
-        return runs[-1] if runs else None
+        return self.store.latest_run_id()
 
     def _store_parallel_results(self, run_id: str, parallel) -> None:
         """Persist each backend's full result + patch when running BOTH."""

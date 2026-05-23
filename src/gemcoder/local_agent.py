@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,7 +18,7 @@ from time import perf_counter
 from typing import Any
 
 from gemcoder.config import GemCoderConfig
-from gemcoder.managed import ManagedAgentResult, _extract_unified_diff
+from gemcoder.managed import ManagedAgentError, ManagedAgentResult, _extract_unified_diff
 
 LocalEventCallback = Callable[[str, dict[str, Any]], None]
 
@@ -89,8 +90,14 @@ class LocalAgentClient:
         self,
         task_packet: str,
         on_event: LocalEventCallback | None = None,
+        *,
+        cancel_event: threading.Event | None = None,
     ) -> ManagedAgentResult:
         diagnostics = self.request_diagnostics()
+        if cancel_event is not None and cancel_event.is_set():
+            diagnostics.update({"status": "cancelled", "error_type": "cancelled"})
+            self.last_diagnostics = diagnostics
+            raise ManagedAgentError("cancelled by user", diagnostics)
         if not self.api_key:
             diagnostics.update({"status": "skipped", "error_type": "missing_api_key"})
             self.last_diagnostics = diagnostics
@@ -116,7 +123,18 @@ class LocalAgentClient:
 
         started = perf_counter()
         try:
-            output_text = asyncio.run(self._run_async(sdk, task_packet, on_event))
+            output_text = asyncio.run(
+                self._run_async(sdk, task_packet, on_event, cancel_event=cancel_event)
+            )
+        except ManagedAgentError as exc:
+            # Cancellation bubbles up untouched so the orchestrator/serve
+            # layer can recognise it and return a clean response.
+            diagnostics.update(exc.diagnostics or {})
+            diagnostics.setdefault("status", "cancelled")
+            diagnostics["elapsed_seconds"] = round(perf_counter() - started, 3)
+            self.last_diagnostics = diagnostics
+            exc.diagnostics = diagnostics
+            raise
         except Exception as exc:  # noqa: BLE001 — surface every failure mode
             diagnostics.update(
                 {
@@ -149,6 +167,8 @@ class LocalAgentClient:
         sdk: _SDKHandles,
         task_packet: str,
         on_event: LocalEventCallback | None,
+        *,
+        cancel_event: threading.Event | None = None,
     ) -> str:
         kwargs: dict[str, Any] = {
             "system_instructions": self.config.managed_agent.system_instruction,
@@ -164,6 +184,11 @@ class LocalAgentClient:
             tokens: list[str] = []
             token_iter = aiter(response)
             async for token in token_iter:
+                if cancel_event is not None and cancel_event.is_set():
+                    raise ManagedAgentError(
+                        "cancelled by user",
+                        {"status": "cancelled", "error_type": "cancelled"},
+                    )
                 tokens.append(token)
                 if on_event is not None:
                     on_event("token", {"text": token})

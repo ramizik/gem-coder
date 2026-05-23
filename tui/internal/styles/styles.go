@@ -22,6 +22,11 @@ var (
 		Foreground(Dim).
 		Italic(true)
 
+	Status = lipgloss.NewStyle().
+		Foreground(Subtle).
+		Background(lipgloss.Color("235")).
+		Padding(0, 1)
+
 	UserMark = lipgloss.NewStyle().
 			Foreground(Accent).
 			Bold(true)
@@ -48,8 +53,26 @@ var (
 	Diff = lipgloss.NewStyle().
 		Foreground(Soft)
 
-	DiffAdd  = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))  // green
-	DiffDel  = lipgloss.NewStyle().Foreground(lipgloss.Color("203")) // red
-	DiffHunk = lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Bold(true)
-	DiffMeta = lipgloss.NewStyle().Foreground(Subtle)
+	DiffAdd        = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))  // green
+	DiffDel        = lipgloss.NewStyle().Foreground(lipgloss.Color("203")) // red
+	DiffHunk       = lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Bold(true)
+	DiffMeta       = lipgloss.NewStyle().Foreground(Subtle)
+	DiffFileHeader = lipgloss.NewStyle().Foreground(Highlight).Bold(true)
+
+	// InputBox wraps the textarea with a rounded border when idle.
+	InputBox = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(Subtle).
+			Padding(0, 1)
+
+	// InputBoxBusy dims the border while a run is in flight.
+	InputBoxBusy = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(Dim).
+			Padding(0, 1)
+
+	// Backend tags used to distinguish step lines when both backends stream
+	// into the same viewport (e.g. `gemcoder serve --backend both`).
+	LocalTag  = lipgloss.NewStyle().Foreground(lipgloss.Color("36")).Bold(true)  // cyan
+	RemoteTag = lipgloss.NewStyle().Foreground(lipgloss.Color("213")).Bold(true) // pink
 )

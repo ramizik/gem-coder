@@ -308,7 +308,7 @@ def graph(
         runs = store.list_runs()
         if not runs:
             raise typer.BadParameter("No runs found.")
-        selected = runs[-1]
+        selected = runs[0]
     events = store.read_events(selected)
     if json_output:
         _print_json({"run_id": selected, "events": [asdict(event) for event in events]})
@@ -334,7 +334,7 @@ def apply(
         runs = store.list_runs()
         if not runs:
             raise typer.BadParameter("No runs found.")
-        selected = runs[-1]
+        selected = runs[0]
     patch_path = root / ".gemcoder" / "runs" / selected / "patch.diff"
     if not patch_path.exists():
         raise typer.BadParameter(f"No patch.diff for run {selected}.")
