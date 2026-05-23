@@ -18,9 +18,26 @@ var (
 		Foreground(Subtle).
 		Bold(true)
 
+	StatusBar = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("253")).
+			Background(lipgloss.Color("237")).
+			Padding(0, 1)
+
+	StatusBarBusy = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("226")).
+			Bold(true)
+
+	StatusBarKey = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("250")).
+			Bold(true)
+
 	Hint = lipgloss.NewStyle().
 		Foreground(Dim).
 		Italic(true)
+
+	Kbd = lipgloss.NewStyle().
+		Foreground(Highlight).
+		Bold(true)
 
 	UserMark = lipgloss.NewStyle().
 			Foreground(Accent).
