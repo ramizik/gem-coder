@@ -11,3 +11,10 @@ __pycache__/
 dist/
 build/
 *.egg-info/
+
+# Ramis
+.antigravitycli/
+.cursor/
+GEMINI.md
+.env
+.vscode/
