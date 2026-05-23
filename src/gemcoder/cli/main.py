@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import json
 import os
-from dataclasses import asdict
 from pathlib import Path
 
 import typer
@@ -14,14 +12,15 @@ from rich.table import Table
 
 from gemcoder.config import CONFIG_FILE, load_config
 from gemcoder.events import RunStore
-from gemcoder.managed import ManagedAgentClient
-from gemcoder.task_packet import build_task_packet
+from gemcoder.harness import HarnessRunner
+from gemcoder.managed import ManagedAgentClient, antigravity_sdk_available
 from gemcoder.templates import scaffold
-from gemcoder.verify import run_verification
 
 app = typer.Typer(help="Optimisable CLI/TUI coding harness for Gemini Managed Agents.")
 agent_app = typer.Typer(help="Managed Agent commands.")
+harness_app = typer.Typer(help="Harness inspection commands.")
 app.add_typer(agent_app, name="agent")
+app.add_typer(harness_app, name="harness")
 console = Console()
 
 
@@ -66,6 +65,11 @@ def doctor() -> None:
         "required for Managed Agents",
     )
     table.add_row(
+        "Antigravity SDK",
+        "ok" if antigravity_sdk_available() else "optional",
+        "install with: uv sync --extra antigravity",
+    )
+    table.add_row(
         "Verification",
         "ok" if config.verification.commands else "not configured",
         ", ".join(config.verification.commands) or "none",
@@ -76,8 +80,9 @@ def doctor() -> None:
 @agent_app.command("create")
 def agent_create() -> None:
     """Create or configure the project Managed Agent."""
-    config = load_config(Path.cwd())
-    client = ManagedAgentClient(config)
+    root = Path.cwd()
+    config = load_config(root)
+    client = ManagedAgentClient(config, root)
     agent_id = client.create_agent()
     console.print(f"[green]Managed Agent ready:[/green] {agent_id}")
 
@@ -85,28 +90,9 @@ def agent_create() -> None:
 @app.command()
 def run(task: str = typer.Argument(..., help="Coding task to run.")) -> None:
     """Run a coding task through GemCoder."""
-    root = Path.cwd()
-    config = load_config(root)
-    store = RunStore(root)
-    run_id = store.create_run(task)
-    store.append(run_id, "task.packet.created")
-    packet = build_task_packet(root, task, config)
-    store.write_artifact(run_id, "task-packet.yaml", packet)
-
-    client = ManagedAgentClient(config)
-    store.append(run_id, "managed.interaction.started", {"provider": config.managed_agent.provider})
-    result = client.run_task(packet)
-    store.append(run_id, "managed.result.received", {"summary": result.summary})
-    store.write_artifact(run_id, "managed-result.json", json.dumps(asdict(result), indent=2) + "\n")
-
-    if result.patch:
-        store.write_artifact(run_id, "patch.diff", result.patch)
-        store.append(run_id, "patch.received")
-    else:
-        store.append(run_id, "patch.empty")
-
-    console.print(Panel(result.summary, title=f"Run {run_id}"))
-    console.print(f"Artifacts: .gemcoder/runs/{run_id}")
+    result = HarnessRunner(Path.cwd()).run(task)
+    console.print(Panel(result.summary, title=f"Run {result.run_id}"))
+    console.print(f"Artifacts: .gemcoder/runs/{result.run_id}")
 
 
 @app.command()
@@ -130,27 +116,37 @@ def graph(
 @app.command()
 def verify(run_id: str | None = typer.Argument(None, help="Run id to verify.")) -> None:
     """Run configured local verification commands."""
-    root = Path.cwd()
-    config = load_config(root)
-    store = RunStore(root)
-    selected = run_id
-    if selected is None:
-        runs = store.list_runs()
-        selected = runs[-1] if runs else "manual"
-    store.append(selected, "verification.started", {"commands": config.verification.commands})
-    results = run_verification(root, config.verification.commands)
+    results = HarnessRunner(Path.cwd()).verify(run_id)
     for result in results:
         status = "pass" if result.returncode == 0 else "fail"
-        store.append(
-            selected,
-            "verification.command",
-            {"command": result.command, "status": status},
-        )
         console.print(f"[bold]{result.command}[/bold]: {status}")
-    if results and all(result.returncode == 0 for result in results):
-        store.append(selected, "verification.passed")
-    elif results:
-        store.append(selected, "verification.failed")
+    if not results:
+        console.print("[yellow]No verification commands configured.[/yellow]")
+
+
+@harness_app.command("show")
+def harness_show() -> None:
+    """Show the user-defined harness loaded for this repository."""
+    details = HarnessRunner(Path.cwd()).inspect_harness()
+    table = Table(title="GemCoder Harness")
+    table.add_column("Field")
+    table.add_column("Value")
+    for key, value in details.items():
+        if isinstance(value, list):
+            rendered = "\n".join(str(item) for item in value) or "none"
+        else:
+            rendered = str(value)
+        table.add_row(key, rendered)
+    console.print(table)
+
+
+@harness_app.command("build")
+def harness_build() -> None:
+    """Build the editable harness files into runtime artifacts."""
+    result = HarnessRunner(Path.cwd()).build()
+    console.print(f"[green]Built harness:[/green] {result.build_id}")
+    console.print(f"Build directory: {result.build_dir.relative_to(Path.cwd())}")
+    console.print(f"Manifest: {result.manifest_path.relative_to(Path.cwd())}")
 
 
 @app.command()

@@ -17,15 +17,50 @@ class ProjectConfig(BaseModel):
 
 class ManagedAgentConfig(BaseModel):
     provider: str = "google"
-    mode: str = "default"
+    mode: str = "inline"
+    base_agent: str = "antigravity-preview-05-2026"
+    api_base: str = "https://generativelanguage.googleapis.com/v1beta"
+    api_revision: str = "2026-05-20"
     reuse_sessions: bool = True
     agent_id: str | None = None
+    system_instruction: str = (
+        "You are GemCoder running inside a managed coding environment. "
+        "Read the mounted repository files, follow the mounted AGENTS.md and skills, "
+        "make minimal changes, run relevant verification when possible, and return "
+        "a concise summary plus a unified diff when code changes are needed."
+    )
+    tools: list[str | dict[str, Any]] = Field(default_factory=list)
+    timeout_seconds: int = 300
 
 
 class HarnessConfig(BaseModel):
     instructions: str = "AGENTS.md"
     skills_dir: str = ".gemcoder/skills"
     patch_format: str = "unified_diff"
+
+
+class ContextConfig(BaseModel):
+    include: list[str] = Field(default_factory=lambda: ["**/*"])
+    exclude: list[str] = Field(
+        default_factory=lambda: [
+            ".git/**",
+            ".gemcoder/**",
+            ".venv/**",
+            "node_modules/**",
+            "__pycache__/**",
+            ".pytest_cache/**",
+            ".ruff_cache/**",
+            ".mypy_cache/**",
+            ".superqode/**",
+            ".env",
+            ".env.*",
+            "*.pem",
+            "*.key",
+            "*secret*",
+            "*credential*",
+        ]
+    )
+    max_files: int = 40
 
 
 class VerificationConfig(BaseModel):
@@ -49,6 +84,7 @@ class GemCoderConfig(BaseModel):
     project: ProjectConfig = Field(default_factory=ProjectConfig)
     managed_agent: ManagedAgentConfig = Field(default_factory=ManagedAgentConfig)
     harness: HarnessConfig = Field(default_factory=HarnessConfig)
+    context: ContextConfig = Field(default_factory=ContextConfig)
     verification: VerificationConfig = Field(default_factory=VerificationConfig)
     approvals: ApprovalConfig = Field(default_factory=ApprovalConfig)
     optimization: OptimizationConfig = Field(default_factory=OptimizationConfig)

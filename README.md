@@ -14,6 +14,7 @@ still need a practical coding workflow around that runtime:
 - initialize a repo for agentic coding
 - define project instructions and reusable skills
 - package a coding task with the right files and constraints
+- exclude secrets and local-only artifacts from remote context
 - ask for patches instead of prose
 - apply and verify changes locally
 - inspect what happened after the run
@@ -27,6 +28,7 @@ GemCoder provides that workflow.
 gemcoder init
 gemcoder doctor
 gemcoder agent create
+gemcoder harness build
 gemcoder run "Fix the failing tests and add a regression test"
 gemcoder graph
 ```
@@ -61,6 +63,7 @@ uv run --project /path/to/gemcoder gemcoder init
 
 - Creates a repeatable coding harness for a repository.
 - Loads `AGENTS.md` and `.gemcoder/skills/*.md`.
+- Builds editable harness files into `.gemcoder/build/` artifacts.
 - Builds structured task packets for Managed Agents.
 - Streams and stores run events.
 - Requests patch-first results from the agent.
@@ -68,6 +71,9 @@ uv run --project /path/to/gemcoder gemcoder init
 - Runs local verification commands.
 - Shows a graph/timeline of the full run.
 - Evaluates and optimizes harness behavior over time.
+
+Read [Defining A GemCoder Harness](docs/harness.md) for the user-owned harness
+format.
 
 ## Project Layout
 
@@ -95,8 +101,14 @@ project:
 
 managed_agent:
   provider: google
-  mode: default
+  mode: inline
+  base_agent: antigravity-preview-05-2026
+  api_base: https://generativelanguage.googleapis.com/v1beta
+  api_revision: "2026-05-20"
   reuse_sessions: true
+  # Optional. Leave empty to use the Antigravity defaults:
+  # code_execution, google_search, and url_context.
+  tools: []
 
 harness:
   instructions: AGENTS.md
@@ -134,6 +146,26 @@ The first version focuses on the Managed Agents API:
 - local verification
 - run store and graph
 - basic eval command
+
+## Managed Agent API Flow
+
+GemCoder supports two Managed Agent modes:
+
+- `inline`: `gemcoder run` calls `POST /v1beta/interactions` with the current
+  harness mounted inline. This is the fastest hackathon loop.
+- `persisted`: `gemcoder agent create` calls `POST /v1beta/agents`, then
+  `gemcoder run` invokes the configured `managed_agent.agent_id`.
+
+Set the hackathon key before calling the remote API:
+
+```bash
+export GEMINI_API_KEY="..."
+gemcoder harness build
+gemcoder run "Fix the failing tests"
+```
+
+For each run, GemCoder stores `managed-request.json`, `managed-response.json`,
+`task-packet.yaml`, and the event graph under `.gemcoder/runs/<run-id>/`.
 
 ## Roadmap
 
