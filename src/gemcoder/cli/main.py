@@ -29,9 +29,26 @@ app.add_typer(harness_app, name="harness")
 console = Console()
 
 
+def _load_dotenv(root: Path) -> None:
+    """Populate os.environ from .env (KEY=VALUE per line). Does not override existing vars."""
+    env_path = root / ".env"
+    if not env_path.exists():
+        return
+    for line in env_path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
 @app.callback()
 def _default(ctx: typer.Context) -> None:
     """Launch the chat TUI when no subcommand is given."""
+    _load_dotenv(Path.cwd())
     if ctx.invoked_subcommand is None:
         tui()
 
