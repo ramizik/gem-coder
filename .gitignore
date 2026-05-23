@@ -26,3 +26,7 @@ build/
 GEMINI.md
 .env
 .vscode/
+CLAUDE.md
+ROADMAP.md
+docs/superpowers/
+antigravity-sdk-python/

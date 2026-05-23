@@ -533,3 +533,22 @@ Post-MVP success:
 - better task completion rate
 - measurable reduction in time to verified fix
 - harness candidates can be compared and adopted safely
+
+## 18. Platform & Backends (updated 2026-05-23)
+
+GemCoder runs the **same** harness definition on two backends, chosen by task size
+(decision record: `docs/platform-decision.md` — "use both"):
+
+- **Local backend — Antigravity SDK.** For lighter tasks, the harness runs on the
+  developer's machine via the `google-antigravity` SDK's local runtime
+  (`Agent` + `LocalAgentConfig`): the SDK owns the agentic loop, multi-turn state,
+  history, thought preservation, and built-in file/shell tools; GemCoder adds
+  custom tools and governance (hooks/policies). The model is Gemini via
+  `GEMINI_API_KEY` ("local" = the loop runs locally, not an on-device model).
+- **Cloud backend — ADK 2.0 + Managed Agents.** For bigger tasks, the harness is
+  built with **ADK 2.0** and deployed to **Managed Agents** (Interactions API) —
+  an isolated cloud Linux sandbox. This path works end-to-end today (commit
+  `c9fcc0e`). **A2A** is the roadmap transport for subagents.
+
+Same engine across both ⇒ **local↔cloud parity**; the patch is the interchange
+contract and `apply`/`verify` stay the gated local steps regardless of backend.

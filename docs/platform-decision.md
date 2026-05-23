@@ -7,6 +7,14 @@
 
 Build with **ADK 2.0 (Python)**. Deploy to **Managed Agents (Interactions API)**. Adopt **A2A** when GemCoder needs subagents. Skip everything else for now.
 
+> **Update — 2026-05-23 (team decision): use both.** The **Antigravity SDK** is
+> adopted as GemCoder's **local backend** (the "embed the harness / self-host"
+> layer in the table below): run the same harness on the developer's machine for
+> lighter tasks. **ADK 2.0 + Managed Agents** remain the build + cloud path for
+> bigger tasks. They are **complementary layers, not alternatives** — same engine,
+> so local↔cloud parity. The "Direct dependency on Antigravity SDK" rejection
+> below is **superseded** (see the amended note there).
+
 ## How the 6 Google agent pieces actually layer
 
 | Layer | Product | Role |
@@ -45,7 +53,7 @@ These decisions are *direction*, not a single PR. Concrete plan:
 ## What this decision rejects
 
 - **Antigravity desktop app / CLI as a dependency.** They're the competitor product surface, not a building block.
-- **Direct dependency on Antigravity SDK.** Managed Agents already runs the same harness server-side; no need for a second copy.
+- ~~**Direct dependency on Antigravity SDK.**~~ **Superseded (2026-05-23, "use both"):** the Antigravity SDK is now adopted for the **local backend** — running the harness on the dev's machine with the same engine as Managed Agents (local↔cloud parity). Managed Agents stays the cloud runtime; the SDK is the local-runtime layer, not a redundant copy.
 - **Agent Executor short-term.** Preview status, infra investment, no user pull yet.
 
 ## Open questions

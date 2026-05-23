@@ -6,6 +6,12 @@ It turns Managed Agents into a repo-aware developer workflow with project
 instructions, skills, structured task packets, patch previews, local
 verification, run graphs, and harness evaluation.
 
+**Two backends, one harness.** GemCoder uses the Google agent stack at the right
+layer for each task: the **Antigravity SDK** runs the harness **locally** (the
+agentic loop on your machine) for lighter tasks, and **ADK 2.0 + Managed Agents**
+run it in the **cloud** for bigger ones — same engine, so local↔cloud stay in
+parity. Switch with `agent.backend`. See [`docs/platform-decision.md`](docs/platform-decision.md).
+
 ## Why GemCoder
 
 Gemini Managed Agents provide a powerful cloud execution runtime. Developers
